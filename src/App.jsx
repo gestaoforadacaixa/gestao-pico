@@ -53,11 +53,21 @@ const CATS_PES = [
 ];
 const MEIOS = ["Crédito", "Débito", "Dinheiro", "Pix"];
 
-const MESES = ["2026-04", "2026-05", "2026-06", "2026-07", "2026-08", "2026-09"];
-const ML = {
-  "2026-04": "Abril 2026", "2026-05": "Maio 2026", "2026-06": "Junho 2026",
-  "2026-07": "Julho 2026", "2026-08": "Agosto 2026", "2026-09": "Setembro 2026",
-};
+// Gera meses dinamicamente: 3 meses antes até 3 depois do mês atual
+const NOMES_MES = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
+function gerarMeses() {
+  const arr = [];
+  const labels = {};
+  const hj = new Date();
+  for (let i = -3; i <= 3; i++) {
+    const d = new Date(hj.getFullYear(), hj.getMonth() + i, 1);
+    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+    arr.push(key);
+    labels[key] = `${NOMES_MES[d.getMonth()]} ${d.getFullYear()}`;
+  }
+  return { arr, labels, idxAtual: 3 }; // índice 3 = mês atual
+}
+const { arr: MESES, labels: ML, idxAtual: IDX_ATUAL } = gerarMeses();
 
 const CAT_COR = {
   "Funcionário":               "#CC0000",
@@ -155,6 +165,7 @@ function FormSheet({ mes, onSaved, onClose }) {
   const [data, setData] = useState(mes + "-" + new Date().toISOString().slice(8, 10));
   const [obs,  setObs]  = useState("");
   const [rec,  setRec]  = useState(false);
+  const [reps, setReps] = useState(3);
   const [err,  setErr]  = useState({});
   const [busy, setBusy] = useState(false);
 
@@ -180,10 +191,11 @@ function FormSheet({ mes, onSaved, onClose }) {
     if (!data)         e.data = true;
     if (Object.keys(e).length) { setErr(e); return; }
     setBusy(true);
+    const baseMes = data.slice(0, 7);
     const item = {
       id:              uid(),
       cliente_id:      CID,
-      mes,
+      mes:             baseMes,
       centro:          cls,
       categoria:       cat,
       descricao:       desc.trim(),
@@ -196,6 +208,19 @@ function FormSheet({ mes, onSaved, onClose }) {
       motivo_exclusao: "",
     };
     const res = await sbPost(item);
+    // Se recorrente, gera lançamentos nos próximos meses
+    if (res && rec && reps > 1) {
+      const [ano, mesN, dia] = data.split("-").map(Number);
+      for (let i = 1; i < reps; i++) {
+        const d = new Date(ano, mesN - 1 + i, dia);
+        const novaData = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        await sbPost({
+          id: uid(), cliente_id: CID, mes: novaData.slice(0, 7),
+          centro: cls, categoria: cat, descricao: desc.trim(), valor: v,
+          meio, data: novaData, obs, excluido: false, recorrente: true, motivo_exclusao: "",
+        });
+      }
+    }
     setBusy(false);
     if (res) { onSaved(); onClose(); }
     else setErr({ geral: "Erro ao salvar. Verifique a conexão." });
@@ -279,10 +304,10 @@ function FormSheet({ mes, onSaved, onClose }) {
         </div>
 
         {/* Recorrente */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid #F5F5F5", marginBottom: 20 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid #F5F5F5", marginBottom: rec ? 12 : 20 }}>
           <div>
             <div style={{ fontSize: 14, fontWeight: 700, color: "#1A1A1A" }}>Despesa Recorrente</div>
-            <div style={{ fontSize: 11, color: "#AAAAAA", marginTop: 1 }}>Repete todo mês</div>
+            <div style={{ fontSize: 11, color: "#AAAAAA", marginTop: 1 }}>Repete nos próximos meses</div>
           </div>
           <div
             style={{ width: 44, height: 24, borderRadius: 12, cursor: "pointer", background: rec ? "#CC0000" : "#E0E0E0", display: "flex", alignItems: "center", padding: 2, transition: "background .2s", flexShrink: 0 }}
@@ -290,6 +315,52 @@ function FormSheet({ mes, onSaved, onClose }) {
             <div style={{ width: 20, height: 20, borderRadius: "50%", background: "#FFFFFF", boxShadow: "0 1px 4px rgba(0,0,0,0.15)", transition: "transform .2s", transform: rec ? "translateX(20px)" : "none" }} />
           </div>
         </div>
+
+        {/* Quantidade de repetições */}
+        {rec && (
+          <div style={{ background: "#FFF5F5", border: "1px solid #FFD5D5", borderRadius: 10, padding: "14px", marginBottom: 20 }}>
+            <label style={LBL}>Quantas vezes repetir? (1 a 24)</label>
+            <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <div
+                onClick={() => setReps(r => Math.max(1, r - 1))}
+                style={{
+                  width: 44, height: 44, borderRadius: 10, cursor: "pointer",
+                  border: "2px solid #E0E0E0", background: "#FFFFFF", color: "#CC0000",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 22, fontWeight: 700, userSelect: "none", flexShrink: 0,
+                }}>−</div>
+              <input
+                type="number" inputMode="numeric" min="1" max="24"
+                value={reps}
+                onChange={e => {
+                  let n = parseInt(e.target.value) || 1;
+                  if (n < 1) n = 1;
+                  if (n > 24) n = 24;
+                  setReps(n);
+                }}
+                style={{
+                  flex: 1, textAlign: "center", border: "2px solid #E0E0E0",
+                  borderRadius: 10, padding: "11px", fontSize: 22, fontWeight: 700,
+                  color: "#1A1A1A", fontFamily: "'Bebas Neue',sans-serif",
+                  letterSpacing: ".05em", outline: "none", background: "#FFFFFF",
+                  MozAppearance: "textfield", appearance: "textfield",
+                }} />
+              <div
+                onClick={() => setReps(r => Math.min(24, r + 1))}
+                style={{
+                  width: 44, height: 44, borderRadius: 10, cursor: "pointer",
+                  border: "2px solid #E0E0E0", background: "#FFFFFF", color: "#CC0000",
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 22, fontWeight: 700, userSelect: "none", flexShrink: 0,
+                }}>+</div>
+            </div>
+            <div style={{ fontSize: 11, color: "#CC0000", marginTop: 10, fontWeight: 600 }}>
+              {reps === 1
+                ? "Será lançado apenas este mês"
+                : `Será lançado este mês + ${reps - 1} mês(es) seguinte(s)`}
+            </div>
+          </div>
+        )}
 
         <button className="btn btn-main" onClick={salvar} disabled={busy}>
           {busy ? <><span className="spin" /> Salvando…</> : "✓ Registrar Lançamento"}
@@ -344,7 +415,7 @@ function DelSheet({ item, onDone, onClose }) {
 
 // ─── APP ─────────────────────────────────────────────────────────────────────────
 export default function AppIsaque() {
-  const [mesIdx,   setMesIdx]   = useState(0);
+  const [mesIdx,   setMesIdx]   = useState(IDX_ATUAL);
   const [items,    setItems]    = useState([]);
   const [loading,  setLoading]  = useState(true);
   const [view,     setView]     = useState("inicio");
@@ -365,9 +436,11 @@ export default function AppIsaque() {
 
   useEffect(() => { setItems([]); load(); }, [mes]);
   useEffect(() => {
+    // Não recarrega enquanto algum modal estiver aberto (evita fechar a tela de exclusão)
+    if (showForm || del) return;
     const t = setInterval(() => load(true), 5000);
     return () => clearInterval(t);
-  }, [mes]);
+  }, [mes, showForm, del]);
 
   const showToast = m => { setToast(m); setTimeout(() => setToast(null), 2500); };
 
