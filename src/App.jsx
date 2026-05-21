@@ -308,6 +308,8 @@ function CaixaSheet({mes,diaExistente,onSaved,onClose}){
   const [obs,setObs]=useState(diaExistente?diaExistente.obs||"":"");
   const [busy,setBusy]=useState(false);
   const [errMsg,setErrMsg]=useState("");
+  const [gruposAbertos,setGruposAbertos]=useState({});
+  const toggleGrupo=g=>setGruposAbertos(p=>({...p,[g]:!p[g]}));
   function handleDataChange(nd){
     setData(nd);
     setItens(prev=>{
@@ -355,30 +357,49 @@ function CaixaSheet({mes,diaExistente,onSaved,onClose}){
           const servicos=grupos[grp];
           if(!servicos)return null;
           const temVariacao=grp==="Corte"||grp==="Barba"||grp==="Combo";
+          const principal=temVariacao;
+          const open=principal||gruposAbertos[grp];
+          const qtdNoGrupo=servicos.reduce((s,it)=>s+it.qtd,0);
+          const totalGrupo=servicos.reduce((s,it)=>s+(it.qtd*(parseFloat(it.valor)||0)),0);
           return (
             <div key={grp} style={{marginBottom:12}}>
-              <div style={{fontSize:10,color:"#777",letterSpacing:".14em",textTransform:"uppercase",fontWeight:700,marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
-                {GRUPO_LABEL[grp]||grp}
-                {temVariacao&&<span style={{fontSize:9,background:alta?"#FFF0E0":"#E8F5EE",color:alta?"#E65100":"#00875A",border:`1px solid ${alta?"#E65100":"#00875A"}33`,borderRadius:4,padding:"1px 6px",fontWeight:700}}>{alta?"QUI-DOM":"SEG-QUA"}</span>}
-              </div>
-              <div style={{background:"#FAFAFA",borderRadius:10,border:"1px solid #EEE",padding:"2px 12px"}}>
-                {servicos.map(it=>(
-                  <div key={it._idx} className="serv-row">
-                    <div style={{flex:1,minWidth:0}}>
-                      <div style={{fontSize:14,fontWeight:700,color:"#1A1A1A",marginBottom:4}}>{it.nome}</div>
-                      <div style={{position:"relative",width:100}}>
-                        <span style={{position:"absolute",left:9,top:"50%",transform:"translateY(-50%)",fontSize:11,color:"#888",fontWeight:600,pointerEvents:"none"}}>R$</span>
-                        <input className="inp inp-sm" type="number" inputMode="decimal" style={{paddingLeft:28,fontSize:14,width:"100%"}} value={it.valor||""} placeholder="0" onChange={e=>upd(it._idx,"valor",e.target.value===""?0:parseFloat(e.target.value)||0)}/>
+              {principal?(
+                <div style={{fontSize:10,color:"#777",letterSpacing:".14em",textTransform:"uppercase",fontWeight:700,marginBottom:6,display:"flex",alignItems:"center",gap:6}}>
+                  {GRUPO_LABEL[grp]||grp}
+                  <span style={{fontSize:9,background:alta?"#FFF0E0":"#E8F5EE",color:alta?"#E65100":"#00875A",border:`1px solid ${alta?"#E65100":"#00875A"}33`,borderRadius:4,padding:"1px 6px",fontWeight:700}}>{alta?"QUI-DOM":"SEG-QUA"}</span>
+                </div>
+              ):(
+                <div onClick={()=>toggleGrupo(grp)} style={{cursor:"pointer",display:"flex",justifyContent:"space-between",alignItems:"center",padding:"10px 14px",background:open?"#FFF":"#FAFAFA",borderRadius:10,border:"1px solid #EEE",marginBottom:open?6:0,transition:"background .15s"}}>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    <div style={{fontSize:13,fontWeight:700,color:"#1A1A1A",letterSpacing:".05em"}}>{GRUPO_LABEL[grp]||grp}</div>
+                    {qtdNoGrupo>0&&<span style={{fontSize:10,background:"#CC0000",color:"#FFF",borderRadius:4,padding:"2px 7px",fontWeight:700,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:".06em"}}>{qtdNoGrupo} item(ns)</span>}
+                  </div>
+                  <div style={{display:"flex",alignItems:"center",gap:10}}>
+                    {totalGrupo>0&&<div style={{fontSize:14,fontFamily:"'Bebas Neue',sans-serif",color:"#CC0000"}}>{fmt(totalGrupo)}</div>}
+                    <div style={{color:"#AAA",transition:"transform .2s",transform:open?"rotate(180deg)":"none",fontSize:12}}>▾</div>
+                  </div>
+                </div>
+              )}
+              {open&&(
+                <div style={{background:"#FAFAFA",borderRadius:10,border:"1px solid #EEE",padding:"2px 12px"}}>
+                  {servicos.map(it=>(
+                    <div key={it._idx} className="serv-row">
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontSize:14,fontWeight:700,color:"#1A1A1A",marginBottom:4}}>{it.nome}</div>
+                        <div style={{position:"relative",width:100}}>
+                          <span style={{position:"absolute",left:9,top:"50%",transform:"translateY(-50%)",fontSize:11,color:"#888",fontWeight:600,pointerEvents:"none"}}>R$</span>
+                          <input className="inp inp-sm" type="number" inputMode="decimal" style={{paddingLeft:28,fontSize:14,width:"100%"}} value={it.valor||""} placeholder="0" onChange={e=>upd(it._idx,"valor",e.target.value===""?0:parseFloat(e.target.value)||0)}/>
+                        </div>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+                        <button className="num-btn" onClick={()=>upd(it._idx,"qtd",Math.max(0,it.qtd-1))}>-</button>
+                        <div style={{width:34,textAlign:"center",fontSize:20,fontFamily:"'Bebas Neue',sans-serif",color:it.qtd>0?"#CC0000":"#CCC"}}>{it.qtd}</div>
+                        <button className="num-btn" onClick={()=>upd(it._idx,"qtd",it.qtd+1)}>+</button>
                       </div>
                     </div>
-                    <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
-                      <button className="num-btn" onClick={()=>upd(it._idx,"qtd",Math.max(0,it.qtd-1))}>-</button>
-                      <div style={{width:34,textAlign:"center",fontSize:20,fontFamily:"'Bebas Neue',sans-serif",color:it.qtd>0?"#CC0000":"#CCC"}}>{it.qtd}</div>
-                      <button className="num-btn" onClick={()=>upd(it._idx,"qtd",it.qtd+1)}>+</button>
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -414,13 +435,13 @@ function Balancete({registrosCaixa,despesasAtivas}){
     const map={};
     registrosCaixa.forEach(r=>{
       const seg=segDaSemana(r.data);
-      if(!map[seg])map[seg]={seg,receita:0,despEmp:0,despPes:0,diasRec:[],despItens:[]};
+      if(!map[seg])map[seg]={seg,receita:0,despEmp:0,diasRec:[],despItens:[]};
       map[seg].receita+=r.total;map[seg].diasRec.push(r);
     });
     despesasAtivas.forEach(d=>{
       const seg=segDaSemana(d.data);
-      if(!map[seg])map[seg]={seg,receita:0,despEmp:0,despPes:0,diasRec:[],despItens:[]};
-      if(d.centro==="empresa")map[seg].despEmp+=d.valor;else map[seg].despPes+=d.valor;
+      if(!map[seg])map[seg]={seg,receita:0,despEmp:0,diasRec:[],despItens:[]};
+      map[seg].despEmp+=d.valor;
       map[seg].despItens.push(d);
     });
     return Object.values(map).sort((a,b)=>b.seg.localeCompare(a.seg));
@@ -433,8 +454,7 @@ function Balancete({registrosCaixa,despesasAtivas}){
         const fimD=new Date(sem.seg+"T12:00:00");fimD.setDate(iniD.getDate()+6);
         const segStr=`${iniD.getDate()}/${iniD.getMonth()+1}`;
         const fimStr=`${fimD.getDate()}/${fimD.getMonth()+1}`;
-        const despTotal=sem.despEmp+sem.despPes;
-        const lucro=sem.receita-despTotal;
+        const lucro=sem.receita-sem.despEmp;
         const pos=lucro>=0;
         const lc=pos?"#00875A":"#CC0000";
         const isOpen=aberto===idx;
@@ -462,10 +482,10 @@ function Balancete({registrosCaixa,despesasAtivas}){
                   </div>
                   <div style={{marginBottom:10}}>
                     <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
-                      <span style={{fontSize:12,color:"#CC0000",fontWeight:700}}>Despesas Totais</span>
-                      <span style={{fontSize:14,fontFamily:"'Bebas Neue',sans-serif",color:"#CC0000"}}>{fmt(despTotal)}</span>
+                      <span style={{fontSize:12,color:"#CC0000",fontWeight:700}}>Despesas Empresa</span>
+                      <span style={{fontSize:14,fontFamily:"'Bebas Neue',sans-serif",color:"#CC0000"}}>{fmt(sem.despEmp)}</span>
                     </div>
-                    <div style={{height:8,borderRadius:4,background:"#F0F0F0",overflow:"hidden"}}><div style={{width:`${sem.receita>0?Math.min((despTotal/sem.receita)*100,100):100}%`,height:"100%",background:"#CC0000",borderRadius:4}}/></div>
+                    <div style={{height:8,borderRadius:4,background:"#F0F0F0",overflow:"hidden"}}><div style={{width:`${sem.receita>0?Math.min((sem.despEmp/sem.receita)*100,100):100}%`,height:"100%",background:"#CC0000",borderRadius:4}}/></div>
                   </div>
                 </div>
                 <div style={{borderTop:"1px solid #F0F0F0",paddingTop:10}}>
@@ -483,7 +503,7 @@ function Balancete({registrosCaixa,despesasAtivas}){
                   {sem.despEmp>0&&(
                     <div style={{marginBottom:10}}>
                       <div style={{fontSize:10,color:"#AAA",letterSpacing:".14em",textTransform:"uppercase",fontWeight:700,marginBottom:6}}>Despesas Empresa</div>
-                      {sem.despItens.filter(d=>d.centro==="empresa").map((d,i)=>(
+                      {sem.despItens.map((d,i)=>(
                         <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #F8F8F8",fontSize:13}}>
                           <span style={{color:"#555",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"62%"}}>{d.descricao}</span>
                           <span style={{fontFamily:"'Bebas Neue',sans-serif",color:"#CC0000",flexShrink:0}}>- {fmt(d.valor)}</span>
@@ -494,24 +514,10 @@ function Balancete({registrosCaixa,despesasAtivas}){
                       </div>
                     </div>
                   )}
-                  {sem.despPes>0&&(
-                    <div style={{marginBottom:10}}>
-                      <div style={{fontSize:10,color:"#AAA",letterSpacing:".14em",textTransform:"uppercase",fontWeight:700,marginBottom:6}}>Despesas Pessoais</div>
-                      {sem.despItens.filter(d=>d.centro==="pessoal").map((d,i)=>(
-                        <div key={i} style={{display:"flex",justifyContent:"space-between",padding:"5px 0",borderBottom:"1px solid #F8F8F8",fontSize:13}}>
-                          <span style={{color:"#555",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap",maxWidth:"62%"}}>{d.descricao}</span>
-                          <span style={{fontFamily:"'Bebas Neue',sans-serif",color:"#888",flexShrink:0}}>- {fmt(d.valor)}</span>
-                        </div>
-                      ))}
-                      <div style={{display:"flex",justifyContent:"space-between",padding:"6px 0",fontSize:12,fontWeight:700,color:"#888",borderTop:"1px solid #F0F0F0",marginTop:2}}>
-                        <span>Subtotal Pessoal</span><span style={{fontFamily:"'Bebas Neue',sans-serif"}}>- {fmt(sem.despPes)}</span>
-                      </div>
-                    </div>
-                  )}
                   <div style={{background:pos?"#F0FFF8":"#FFF5F5",borderRadius:10,padding:"12px 14px",marginTop:4,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <div>
                       <div style={{fontSize:11,color:"#888",letterSpacing:".1em",textTransform:"uppercase",fontWeight:700}}>Resultado da Semana</div>
-                      <div style={{fontSize:11,color:"#AAA",marginTop:2}}>{fmt(sem.receita)} - {fmt(despTotal)}</div>
+                      <div style={{fontSize:11,color:"#AAA",marginTop:2}}>{fmt(sem.receita)} - {fmt(sem.despEmp)} desp.</div>
                     </div>
                     <div style={{fontSize:26,fontFamily:"'Bebas Neue',sans-serif",color:lc}}>{pos?"+ ":"- "}{fmt(Math.abs(lucro))}</div>
                   </div>
@@ -544,8 +550,8 @@ function ViewCaixa({mes,despesasAtivas}){
     return()=>clearInterval(t);
   },[mes,showForm,editReg]);
   const totalReceita=registros.reduce((s,r)=>s+(r.total||0),0);
-  const totalDespesas=despesasAtivas.reduce((s,d)=>s+d.valor,0);
-  const lucroMes=totalReceita-totalDespesas;
+  const totalDespEmp=despesasAtivas.reduce((s,d)=>s+d.valor,0);
+  const lucroMes=totalReceita-totalDespEmp;
   const ticketMedio=registros.length>0?totalReceita/registros.length:0;
   const pctMeta=Math.min((totalReceita/META_MAX)*100,100);
   const metaCor=totalReceita>=META_MIN?"#00875A":totalReceita>=META_MIN*0.7?"#E65100":"#CC0000";
@@ -584,7 +590,7 @@ function ViewCaixa({mes,despesasAtivas}){
   return (
     <div>
       <div style={{display:"flex",gap:8,marginBottom:16}}>
-        {[["mensal","Mensal"],["semanal","Semanal"],["balancete","Balancete"],["dias","Dias"]].map(([v,l])=>(
+        {[["mensal","Mensal"],["semanal","Semanal"],["dias","Dias"],["balancete","Balancete"]].map(([v,l])=>(
           <button key={v} onClick={()=>setSubView(v)} style={{flex:1,border:"none",borderRadius:8,padding:"9px 4px",fontSize:11,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:700,letterSpacing:".06em",cursor:"pointer",transition:"all .18s",background:subView===v?"#CC0000":"#FFF",color:subView===v?"#FFF":"#888",boxShadow:subView===v?"0 2px 8px rgba(204,0,0,.3)":"0 1px 3px rgba(0,0,0,.06)"}}>{l}</button>
         ))}
       </div>
@@ -621,8 +627,8 @@ function ViewCaixa({mes,despesasAtivas}){
                   <div style={{fontSize:24,fontFamily:"'Bebas Neue',sans-serif"}}>{fmt(ticketMedio)}</div>
                 </div>
                 <div className="card" style={{textAlign:"center"}}>
-                  <div style={{fontSize:10,color:"#AAA",letterSpacing:".12em",textTransform:"uppercase",fontWeight:600,marginBottom:6}}>Total Despesas</div>
-                  <div style={{fontSize:24,fontFamily:"'Bebas Neue',sans-serif",color:"#CC0000"}}>{fmt(totalDespesas)}</div>
+                  <div style={{fontSize:10,color:"#AAA",letterSpacing:".12em",textTransform:"uppercase",fontWeight:600,marginBottom:6}}>Despesas Empresa</div>
+                  <div style={{fontSize:24,fontFamily:"'Bebas Neue',sans-serif",color:"#CC0000"}}>{fmt(totalDespEmp)}</div>
                 </div>
               </div>
               {registros.length===0&&<div style={{textAlign:"center",padding:"24px 0",color:"#CCC",fontSize:14}}>Nenhum fechamento registrado ainda.</div>}
@@ -651,7 +657,7 @@ function ViewCaixa({mes,despesasAtivas}){
                 return sems.map((s,i)=>{
                   const iniD=new Date(s.seg+"T12:00:00");
                   const fimD=new Date(s.seg+"T12:00:00");fimD.setDate(iniD.getDate()+6);
-                  const despSem=despesasAtivas.filter(d=>segDaSemana(d.data)===s.seg).reduce((acc,d)=>acc+d.valor,0);
+                  const despSem=despesasAtivas.filter(d=>segDaSemana(d.data)===s.seg&&d.centro==="empresa").reduce((acc,d)=>acc+d.valor,0);
                   const lucro=s.rec-despSem;
                   return (
                     <div key={i} className="card" style={{marginBottom:10}}>
@@ -685,7 +691,7 @@ export default function AppIsaque(){
   const [mesIdx,setMesIdx]=useState(IDX_ATUAL);
   const [items,setItems]=useState([]);
   const [loading,setLoading]=useState(true);
-  const [view,setView]=useState("inicio");
+  const [view,setView]=useState("caixa");
   const [showForm,setShowForm]=useState(false);
   const [del,setDel]=useState(null);
   const [toast,setToast]=useState(null);
@@ -809,13 +815,13 @@ export default function AppIsaque(){
           <button onClick={()=>setMesIdx(i=>Math.min(MESES.length-1,i+1))} disabled={mesIdx===MESES.length-1} style={{background:"none",border:"none",color:mesIdx===MESES.length-1?"#DDD":"#888",cursor:mesIdx===MESES.length-1?"not-allowed":"pointer",fontSize:20,lineHeight:1,padding:"0 4px"}}>&#8250;</button>
         </div>
         <div style={{display:"flex",borderBottom:"1px solid #F0F0F0"}}>
-          {[["inicio","Inicio"],["caixa","Caixa"],["historico","Historico"],["categorias","Categorias"]].map(([v,l])=>(
+          {[["caixa","Caixa"],["despesas","Despesas"],["historico","Historico"],["categorias","Categorias"]].map(([v,l])=>(
             <button key={v} className={`tab-b${view===v?" on":""}`} onClick={()=>setView(v)}>{l}</button>
           ))}
         </div>
       </div>
       <div style={{padding:"20px 16px 100px"}}>
-        {view==="inicio"&&(
+        {view==="despesas"&&(
           <>
             <div style={{background:"#FFF",borderRadius:14,padding:"22px 20px",marginBottom:16,boxShadow:"0 1px 6px rgba(0,0,0,.06)",borderLeft:"4px solid #CC0000"}}>
               <div style={{fontSize:10,color:"#AAA",letterSpacing:".2em",textTransform:"uppercase",marginBottom:4,fontWeight:600}}>Total Despesas - {ML[mes]}</div>
@@ -852,7 +858,7 @@ export default function AppIsaque(){
             )}
           </>
         )}
-        {view==="caixa"&&<ViewCaixa mes={mes} despesasAtivas={ativos}/>}
+        {view==="caixa"&&<ViewCaixa mes={mes} despesasAtivas={ativos.filter(t=>t.centro==="empresa")}/>}
         {view==="historico"&&(
           <>
             <div style={{fontSize:10,color:"#AAA",letterSpacing:".18em",textTransform:"uppercase",marginBottom:14,fontWeight:600}}>{items.length} lancamentos - {ML[mes]}</div>
