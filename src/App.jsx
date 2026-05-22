@@ -288,6 +288,95 @@ function DelSheet({item,onDone,onClose}){
   );
 }
 
+function EditSheet({item,onDone,onClose}){
+  const [cls,setCls]=useState(item.centro||"empresa");
+  const [cat,setCat]=useState(item.categoria);
+  const [desc,setDesc]=useState(item.descricao);
+  const [val,setVal]=useState(String(item.valor).replace(".",","));
+  const [meio,setMeio]=useState(item.meio);
+  const [data,setData]=useState(item.data);
+  const [obs,setObs]=useState(item.obs||"");
+  const [busy,setBusy]=useState(false);
+  const [err,setErr]=useState({});
+  const cats=cls==="empresa"?CATS_EMP:CATS_PES;
+  function sf(k,v){
+    if(k==="cls"){setCls(v);setCat("");}
+    else if(k==="cat")setCat(v);
+    else if(k==="desc")setDesc(v);
+    else if(k==="val")setVal(v);
+    else if(k==="meio")setMeio(v);
+    else if(k==="data")setData(v);
+    else setObs(v);
+    setErr(e=>({...e,[k]:false}));
+  }
+  async function salvar(){
+    const e={};
+    if(!cat)e.cat=true;
+    if(!desc.trim())e.desc=true;
+    const v=parseFloat(val.replace(",","."));
+    if(!v||v<=0)e.val=true;
+    if(!data)e.data=true;
+    if(Object.keys(e).length){setErr(e);return;}
+    setBusy(true);
+    const ok=await sbPatch(item.id,{centro:cls,categoria:cat,descricao:desc.trim(),valor:v,meio,data,mes:data.slice(0,7),obs});
+    setBusy(false);
+    if(ok){onDone();onClose();}
+    else setErr({geral:"Erro ao salvar."});
+  }
+  const LBL={fontSize:10,color:"#777",letterSpacing:".12em",textTransform:"uppercase",fontWeight:700,display:"block",marginBottom:7};
+  function Err({k}){return err[k]?<div style={{fontSize:11,color:"#CC0000",marginTop:4,fontWeight:600}}>Obrigatorio</div>:null;}
+  return (
+    <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="sheet">
+        <div className="handle"/>
+        <div style={{fontSize:24,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:".08em",marginBottom:20}}>Editar Lancamento</div>
+        {err.geral&&<div style={{background:"#FFF0F0",border:"1px solid #FFCCCC",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#CC0000",marginBottom:14,fontWeight:600}}>{err.geral}</div>}
+        <div style={{marginBottom:16}}>
+          <span style={LBL}>Tipo</span>
+          <div style={{display:"flex",gap:10}}>
+            {[["empresa","Empresa"],["pessoal","Pessoal"]].map(([v,l])=>(
+              <div key={v} className={`seg${cls===v?" on":""}`} onClick={()=>sf("cls",v)}>{l}</div>
+            ))}
+          </div>
+        </div>
+        <div style={{marginBottom:16}}>
+          <label style={LBL}>Categoria *</label>
+          <select className={`inp${err.cat?" inp-err":""}`} value={cat} onChange={e=>sf("cat",e.target.value)}>
+            <option value="">Selecione</option>
+            {cats.map(c=><option key={c} value={c}>{c}</option>)}
+          </select><Err k="cat"/>
+        </div>
+        <div style={{marginBottom:16}}>
+          <label style={LBL}>Descricao *</label>
+          <input className={`inp${err.desc?" inp-err":""}`} value={desc} onChange={e=>sf("desc",e.target.value)}/><Err k="desc"/>
+        </div>
+        <div style={{marginBottom:16}}>
+          <label style={LBL}>Valor (R$) *</label>
+          <input className={`inp${err.val?" inp-err":""}`} type="number" inputMode="decimal" value={val} onChange={e=>sf("val",e.target.value)}/><Err k="val"/>
+        </div>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+          <div>
+            <label style={LBL}>Meio</label>
+            <select className="inp" value={meio} onChange={e=>sf("meio",e.target.value)}>
+              {MEIOS.map(m=><option key={m} value={m}>{m}</option>)}
+            </select>
+          </div>
+          <div>
+            <label style={LBL}>Data *</label>
+            <input className={`inp${err.data?" inp-err":""}`} type="date" value={data} onChange={e=>sf("data",e.target.value)}/><Err k="data"/>
+          </div>
+        </div>
+        <div style={{marginBottom:20}}>
+          <label style={LBL}>Observacao</label>
+          <textarea className="inp" style={{minHeight:56,resize:"none",fontSize:13}} value={obs} onChange={e=>sf("obs",e.target.value)}/>
+        </div>
+        <button className="btn btn-main" onClick={salvar} disabled={busy}>{busy?<><span className="spin"/> Salvando</>:"Salvar Alteracoes"}</button>
+        <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
+      </div>
+    </div>
+  );
+}
+
 function CaixaSheet({mes,diaExistente,onSaved,onClose}){
   const dataInicial=diaExistente?diaExistente.data:hoje();
   function buildItens(dataStr,existentes){
@@ -694,6 +783,7 @@ export default function AppIsaque(){
   const [view,setView]=useState("caixa");
   const [showForm,setShowForm]=useState(false);
   const [del,setDel]=useState(null);
+  const [editItem,setEditItem]=useState(null);
   const [toast,setToast]=useState(null);
   const [collE,setCollE]=useState(false);
   const [collP,setCollP]=useState(false);
@@ -706,10 +796,10 @@ export default function AppIsaque(){
   },[mes]);
   useEffect(()=>{setItems([]);load();},[load]);
   useEffect(()=>{
-    if(showForm||del)return;
+    if(showForm||del||editItem)return;
     const t=setInterval(()=>load(true),5000);
     return()=>clearInterval(t);
-  },[load,showForm,del]);
+  },[load,showForm,del,editItem]);
   function showToast(m){setToast(m);setTimeout(()=>setToast(null),2500);}
   const ativos=useMemo(()=>items.filter(t=>!t.excluido),[items]);
   const empI=useMemo(()=>ativos.filter(t=>t.centro==="empresa").sort((a,b)=>b.data.localeCompare(a.data)),[ativos]);
@@ -738,10 +828,13 @@ export default function AppIsaque(){
             {t.excluido&&t.motivo_exclusao&&<div style={{fontSize:10,color:"#CC0000",marginTop:1,fontWeight:600}}>Excluido: {t.motivo_exclusao}</div>}
           </div>
         </div>
-        <div style={{display:"flex",alignItems:"center",gap:8,flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
           <div style={{fontSize:15,fontFamily:"'Bebas Neue',sans-serif",color:t.excluido?"#CCC":"#1A1A1A"}}>{fmt(t.valor)}</div>
           {!t.excluido&&(
-            <button onClick={()=>setDel(t)} style={{background:"none",border:"1px solid #EEE",borderRadius:6,width:26,height:26,cursor:"pointer",color:"#CCC",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s",flexShrink:0}} onMouseEnter={e=>e.currentTarget.style.color="#CC0000"} onMouseLeave={e=>e.currentTarget.style.color="#CCC"}>x</button>
+            <>
+              <button onClick={()=>setEditItem(t)} title="Editar" style={{background:"none",border:"1px solid #EEE",borderRadius:6,width:26,height:26,cursor:"pointer",color:"#888",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s",flexShrink:0}} onMouseEnter={e=>e.currentTarget.style.color="#2980B9"} onMouseLeave={e=>e.currentTarget.style.color="#888"}>✎</button>
+              <button onClick={()=>setDel(t)} title="Excluir" style={{background:"none",border:"1px solid #EEE",borderRadius:6,width:26,height:26,cursor:"pointer",color:"#CCC",fontSize:12,display:"flex",alignItems:"center",justifyContent:"center",transition:"all .15s",flexShrink:0}} onMouseEnter={e=>e.currentTarget.style.color="#CC0000"} onMouseLeave={e=>e.currentTarget.style.color="#CCC"}>×</button>
+            </>
           )}
         </div>
       </div>
@@ -775,7 +868,7 @@ export default function AppIsaque(){
       </div>
     );
   }
-  const anyModal=showForm||!!del;
+  const anyModal=showForm||!!del||!!editItem;
   return (
     <div style={{background:"#F5F5F5",minHeight:"100vh",maxWidth:480,margin:"0 auto"}}>
       <style>{CSS}</style>
@@ -896,6 +989,7 @@ export default function AppIsaque(){
       )}
       {showForm&&<FormSheet mes={mes} onSaved={()=>{load();showToast("Lancamento registrado");}} onClose={()=>setShowForm(false)}/>}
       {del&&<DelSheet item={del} onDone={()=>{load();showToast("Lancamento excluido");}} onClose={()=>setDel(null)}/>}
+      {editItem&&<EditSheet item={editItem} onDone={()=>{load();showToast("Lancamento atualizado");}} onClose={()=>setEditItem(null)}/>}
       {toast&&<div className="toast">{toast}</div>}
     </div>
   );
