@@ -695,8 +695,8 @@ export default function AppIsaque(){
   const [showForm,setShowForm]=useState(false);
   const [del,setDel]=useState(null);
   const [toast,setToast]=useState(null);
-  const [collE,setCollE]=useState(true);
-  const [collP,setCollP]=useState(true);
+  const [collE,setCollE]=useState(false);
+  const [collP,setCollP]=useState(false);
   const mes=MESES[mesIdx];
   const load=useCallback(async(silent=false)=>{
     if(!silent)setLoading(true);
@@ -726,12 +726,15 @@ export default function AppIsaque(){
     return (
       <div className="row" style={{opacity:t.excluido?0.4:1}}>
         <div style={{display:"flex",gap:10,alignItems:"center",flex:1,minWidth:0}}>
-          <div style={{width:3,height:36,background:t.excluido?"#DDD":(CAT_COR[t.categoria]||"#888"),borderRadius:2,flexShrink:0}}/>
-          <div style={{minWidth:0}}>
+          <div style={{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",background:t.excluido?"#F5F5F5":"#FFF5F5",border:`1px solid ${t.excluido?"#DDD":"#FFD5D5"}`,borderRadius:6,padding:"4px 8px",minWidth:42,flexShrink:0}}>
+            <div style={{fontSize:14,fontWeight:800,color:t.excluido?"#AAA":"#CC0000",lineHeight:1,fontFamily:"'Bebas Neue',sans-serif"}}>{t.data.slice(8,10)}</div>
+            <div style={{fontSize:8,color:t.excluido?"#AAA":"#888",fontWeight:600,letterSpacing:".05em",textTransform:"uppercase",marginTop:1}}>{NOMES_MES[parseInt(t.data.slice(5,7))-1].slice(0,3)}</div>
+          </div>
+          <div style={{minWidth:0,flex:1}}>
             <div style={{fontSize:14,fontWeight:700,color:t.excluido?"#AAA":"#1A1A1A",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",textDecoration:t.excluido?"line-through":"none"}}>
               {t.descricao}{t.recorrente&&!t.excluido&&<span className="badge-rec">REC</span>}
             </div>
-            <div style={{fontSize:11,color:"#999",marginTop:2}}>{fd(t.data)} - {t.categoria} - {t.meio}</div>
+            <div style={{fontSize:11,color:"#999",marginTop:2}}>{t.categoria} · {t.meio}</div>
             {t.excluido&&t.motivo_exclusao&&<div style={{fontSize:10,color:"#CC0000",marginTop:1,fontWeight:600}}>Excluido: {t.motivo_exclusao}</div>}
           </div>
         </div>
@@ -752,7 +755,7 @@ export default function AppIsaque(){
             <div style={{width:4,height:18,background:cor,borderRadius:2}}/>
             <div>
               <div style={{fontSize:15,fontWeight:700}}>{label}</div>
-              <div style={{fontSize:11,color:"#AAA",marginTop:1}}>{list.length} lancamentos</div>
+              <div style={{fontSize:11,color:"#AAA",marginTop:1}}>{list.length} lancamento(s)</div>
             </div>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:10}}>
@@ -761,21 +764,12 @@ export default function AppIsaque(){
           </div>
         </div>
         {open&&(
-          <div className="coll-b">
-            {byCat(list).map(({cat,val})=>(
-              <div key={cat} style={{padding:"9px 0",borderBottom:"1px solid #F5F5F5"}}>
-                <div style={{display:"flex",justifyContent:"space-between",marginBottom:3,alignItems:"center"}}>
-                  <div style={{display:"flex",alignItems:"center",gap:8}}>
-                    <div style={{width:8,height:8,borderRadius:"50%",background:CAT_COR[cat]||"#888"}}/>
-                    <span style={{fontSize:13,color:"#333",fontWeight:600}}>{cat}</span>
-                  </div>
-                  <span style={{fontSize:13,fontFamily:"'Bebas Neue',sans-serif"}}>{fmt(val)}</span>
-                </div>
-                <Bar p={tot>0?(val/tot)*100:0} color={CAT_COR[cat]||"#888"}/>
-                <div style={{fontSize:10,color:"#AAA",marginTop:3}}>{tot>0?((val/tot)*100).toFixed(1):0}%</div>
-              </div>
-            ))}
-            <div style={{paddingBottom:4}}>{list.map(t=><Row key={t.id} t={t}/>)}</div>
+          <div className="coll-b" style={{padding:"4px 0"}}>
+            {list.length===0?(
+              <div style={{padding:"20px 16px",textAlign:"center",color:"#CCC",fontSize:13}}>Nenhum lancamento</div>
+            ):(
+              <div style={{padding:"0 16px"}}>{list.map(t=><Row key={t.id} t={t}/>)}</div>
+            )}
           </div>
         )}
       </div>
