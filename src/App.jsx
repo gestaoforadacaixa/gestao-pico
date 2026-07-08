@@ -472,7 +472,7 @@ function CaixaView({mes}){
     let allDesp=[], allRec=[];
     for(let i=0;i<meses.length;i++){
       const desp=results[i*2]||[], rec=results[i*2+1]||[];
-      allDesp=allDesp.concat(desp.filter(t=>!t.excluido && t.centro==="empresa" && t.categoria!=="Liquidacao de Fatura"));
+      allDesp=allDesp.concat(desp.filter(t=>!t.excluido && t.categoria!=="Liquidacao de Fatura"));
       allRec=allRec.concat(rec);
     }
     // Filtra pelo intervalo exato
