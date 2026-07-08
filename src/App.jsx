@@ -19,7 +19,7 @@ const hoje = () => new Date().toISOString().slice(0,10);
 
 
 const CATS_EMP=["Administrativo","Funcionario","Infraestrutura","Insumos","Investimento","Liquidacao de Fatura","Marketing","Outros"];
-const CATS_PES=["Alimentacao","Compromissos Financeiros","Lazer","Moradia","Reserva","Transporte","Outros"];
+const CATS_PES=["Alimentacao","Compromissos Financeiros","Lazer","Liquidacao de Fatura","Moradia","Reserva","Transporte","Outros"];
 const MEIOS=["Credito","Debito","Dinheiro","Pix"];
 const NOMES_MES=["Janeiro","Fevereiro","Marco","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 const DIAS_SEMANA=["Dom","Seg","Ter","Qua","Qui","Sex","Sab"];
