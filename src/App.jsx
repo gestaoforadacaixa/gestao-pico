@@ -336,6 +336,7 @@ function ReceitaForm({onSaved,onClose}){
   const [desc,setDesc]=useState("");
   const [val,setVal]=useState("");
   const [dataDe,setDataDe]=useState(primeiroDiaDoMes());
+  const [dataAte,setDataAte]=useState(hoje());
   const [obs,setObs]=useState("");
   const [busy,setBusy]=useState(false);
   const [err,setErr]=useState({});
@@ -346,12 +347,25 @@ function ReceitaForm({onSaved,onClose}){
     if(!v||v<=0)e.val=true;
     if(!dataDe)e.dataDe=true;
     if(!dataAte)e.dataAte=true;
+    if(dataDe&&dataAte&&dataDe>dataAte)e.dataAte=true;
     if(Object.keys(e).length){setErr(e);return;}
     setBusy(true);
-    const payload={id:uid(),cliente_id:CID,mes:data.slice(0,7),semana:data,valor:v,descricao:desc.trim(),obs,data_lancamento:primeiroDiaDoMes(),data_de:dataDe,data_ate:dataAte,mes:dataDe?.slice(0,7),semana:dataDe};
+    const payload={
+      id:uid(),
+      cliente_id:CID,
+      mes:dataDe.slice(0,7),
+      semana:dataDe,
+      data_de:dataDe,
+      data_ate:dataAte,
+      valor:v,
+      descricao:desc.trim(),
+      obs,
+      data_lancamento:hoje(),
+    };
     const res=await rcPost(payload);
     setBusy(false);
     if(res){onSaved();onClose();}
+    else setErr({geral:"Erro ao salvar."});
   }
   const LBL={fontSize:10,color:"#777",letterSpacing:".12em",textTransform:"uppercase",fontWeight:700,display:"block",marginBottom:7};
   return (
@@ -359,10 +373,11 @@ function ReceitaForm({onSaved,onClose}){
       <div className="sheet">
         <div className="handle"/>
         <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",letterSpacing:".08em",marginBottom:6,color:"#00875A"}}>Nova Receita</div>
-        <div style={{fontSize:12,color:"#888",marginBottom:20}}>Registro de recebimento em caixa</div>
+        <div style={{fontSize:12,color:"#888",marginBottom:20}}>Registro de faturamento em caixa</div>
+        {err.geral&&<div style={{background:"#FFF0F0",border:"1px solid #FFCCCC",borderRadius:8,padding:"10px 14px",fontSize:12,color:"#CC0000",marginBottom:14,fontWeight:600}}>{err.geral}</div>}
         <div style={{marginBottom:16}}>
           <label style={LBL}>Descrição *</label>
-          <input className={`inp${err.desc?" inp-err":""}`} placeholder="Ex: Pacote Corte Ilimitado" value={desc} onChange={e=>{setDesc(e.target.value);setErr(x=>({...x,desc:false}));}}/>
+          <input className={`inp${err.desc?" inp-err":""}`} placeholder="Ex: Faturamento Julho" value={desc} onChange={e=>{setDesc(e.target.value);setErr(x=>({...x,desc:false}));}}/>
         </div>
         <div style={{marginBottom:16}}>
           <label style={LBL}>Valor Recebido *</label>
@@ -372,14 +387,13 @@ function ReceitaForm({onSaved,onClose}){
           <div style={{display:"flex",gap:10}}>
             <div style={{flex:1}}>
               <label style={LBL}>Data Inicial (DE) *</label>
-              <input className={`inp${err.dataDe?" inp-err":""}`} type="date" value={dataDe} onChange={e=>{setDataDe(e.target.value);setErr(x=>({...x,dataDe:false}));}}/>
+              <input className={`inp${err.dataDe?" inp-err":""}`} type="date" value={dataDe} onChange={e=>{setDataDe(e.target.value);setErr(x=>({...x,dataDe:false,dataAte:false}));}}/>
             </div>
             <div style={{flex:1}}>
               <label style={LBL}>Data Final (ATÉ) *</label>
               <input className={`inp${err.dataAte?" inp-err":""}`} type="date" value={dataAte} onChange={e=>{setDataAte(e.target.value);setErr(x=>({...x,dataAte:false}));}}/>
             </div>
           </div>
-          <input className={`inp${err.data?" inp-err":""}`} type="date" value={data} onChange={e=>{setData(e.target.value);setErr(x=>({...x,data:false}));}}/>
         </div>
         <div style={{marginBottom:20}}>
           <label style={LBL}>Observação</label>
@@ -406,7 +420,7 @@ function DelReceitaSheet({receita,onDone,onClose}){
         <div className="handle"/>
         <div style={{fontSize:22,fontFamily:"'Bebas Neue',sans-serif",color:"#CC0000",marginBottom:6}}>Excluir Receita</div>
         <div style={{fontSize:15,fontWeight:700,marginBottom:2}}>{receita.descricao}</div>
-        <div style={{fontSize:13,color:"#888",marginBottom:18}}>{fmt(receita.valor)} - {fd(receita.semana||receita.data)}</div>
+        <div style={{fontSize:13,color:"#888",marginBottom:18}}>{fmt(receita.valor)} · {fd(receita.data_de||receita.semana||receita.data)} → {fd(receita.data_ate||receita.data_de||receita.data)}</div>
         <div style={{background:"#FFF8F8",border:"1px solid #FFCCCC",borderRadius:10,padding:"12px 14px",marginBottom:18,fontSize:13,color:"#CC0000",fontWeight:600}}>Este recebimento será removido do caixa.</div>
         <button className="btn btn-del" onClick={confirmar} disabled={busy}>{busy?<><span className="spin"/> Excluindo</>:"Confirmar Exclusão"}</button>
         <button className="btn btn-ghost" onClick={onClose}>Cancelar</button>
@@ -450,7 +464,12 @@ function CaixaView(){
     }
     // Filtra pelo intervalo exato
     setDespesas(allDesp.filter(t=>t.data>=dataDe && t.data<=dataAte));
-    setReceitas(allRec.filter(r=>{const d=r.semana||r.data;return d>=dataDe && d<=dataAte;}));
+    setReceitas(allRec.filter(r=>{
+      const ini=r.data_de||r.semana||r.data;
+      const fim=r.data_ate||ini;
+      // considera receita se o período dela tocar o intervalo filtrado
+      return ini<=dataAte && fim>=dataDe;
+    }));
     setLoading(false);
   },[dataDe,dataAte]);
 
@@ -464,7 +483,7 @@ function CaixaView(){
   const totalReceita=receitas.reduce((s,r)=>s+r.valor,0);
   const totalDespesa=despesas.reduce((s,d)=>s+d.valor,0);
   const saldo=totalReceita-totalDespesa;
-  const receitasOrd=[...receitas].sort((a,b)=>(b.semana||b.data).localeCompare(a.semana||a.data));
+  const receitasOrd=[...receitas].sort((a,b)=>(b.data_de||b.semana||b.data).localeCompare(a.data_de||a.semana||a.data));
 
   function setEsteMe(){setDataDe(primeiroDiaDoMes());setDataAte(hoje());}
 
