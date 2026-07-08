@@ -18,7 +18,7 @@ const fd   = d => { const[,m,day]=d.split("-"); return `${day}/${m}`; };
 const hoje = () => new Date().toISOString().slice(0,10);
 
 
-const CATS_EMP=["Administrativo","Funcionario","Infraestrutura","Insumos","Investimento","Marketing","Outros"];
+const CATS_EMP=["Administrativo","Funcionario","Infraestrutura","Insumos","Investimento","Liquidacao de Fatura","Marketing","Outros"];
 const CATS_PES=["Alimentacao","Compromissos Financeiros","Lazer","Moradia","Reserva","Transporte","Outros"];
 const MEIOS=["Credito","Debito","Dinheiro","Pix"];
 const NOMES_MES=["Janeiro","Fevereiro","Marco","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
@@ -36,7 +36,7 @@ function gerarMeses(){
 }
 const {arr:MESES,labels:ML,idxAtual:IDX_ATUAL}=gerarMeses();
 
-const CAT_COR={"Funcionario":"#CC0000","Infraestrutura":"#555555","Administrativo":"#333333","Insumos":"#AA2222","Investimento":"#777777","Marketing":"#BB3333","Outros":"#999999","Alimentacao":"#444444","Compromissos Financeiros":"#CC0000","Lazer":"#888888","Moradia":"#555555","Reserva":"#AAAAAA","Transporte":"#333333"};
+const CAT_COR={"Funcionario":"#CC0000","Infraestrutura":"#555555","Administrativo":"#333333","Insumos":"#AA2222","Investimento":"#777777","Liquidacao de Fatura":"#2980B9","Marketing":"#BB3333","Outros":"#999999","Alimentacao":"#444444","Compromissos Financeiros":"#CC0000","Lazer":"#888888","Moradia":"#555555","Reserva":"#AAAAAA","Transporte":"#333333"};
 
 const CSS=`
 @import url('https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow+Condensed:wght@400;500;600;700&display=swap');
@@ -68,6 +68,7 @@ html,body{background:#F5F5F5;font-family:'Barlow Condensed',sans-serif;color:#1A
 .coll-h:hover{background:#FAFAFA}
 .coll-b{border-top:1px solid #F5F5F5;padding:0 16px}
 .badge-rec{display:inline-block;background:#FFF0F0;color:#CC0000;border:1px solid #FFCCCC;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px;letter-spacing:.06em}
+.badge-liq{display:inline-block;background:#EBF5FB;color:#2980B9;border:1px solid #AED6F1;border-radius:4px;padding:1px 6px;font-size:9px;font-weight:700;margin-left:6px;letter-spacing:.06em}
 .toast{position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:#1A1A1A;color:#FFF;padding:11px 22px;border-radius:50px;font-family:'Barlow Condensed',sans-serif;font-size:12px;letter-spacing:.1em;text-transform:uppercase;z-index:500;white-space:nowrap;pointer-events:none;animation:toastIn .22s ease}
 @keyframes toastIn{from{opacity:0;transform:translateX(-50%) translateY(8px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}
 .spin{display:inline-block;width:14px;height:14px;border:2px solid #EEE;border-top-color:#CC0000;border-radius:50%;animation:spin .7s linear infinite;vertical-align:middle}
@@ -471,7 +472,7 @@ function CaixaView({mes}){
     let allDesp=[], allRec=[];
     for(let i=0;i<meses.length;i++){
       const desp=results[i*2]||[], rec=results[i*2+1]||[];
-      allDesp=allDesp.concat(desp.filter(t=>!t.excluido && t.centro==="empresa"));
+      allDesp=allDesp.concat(desp.filter(t=>!t.excluido && t.centro==="empresa" && t.categoria!=="Liquidacao de Fatura"));
       allRec=allRec.concat(rec);
     }
     // Filtra pelo intervalo exato
@@ -611,8 +612,11 @@ export default function AppIsaque(){
   },[load,showForm,del,editItem]);
   function showToast(m){setToast(m);setTimeout(()=>setToast(null),2500);}
   const ativos=useMemo(()=>items.filter(t=>!t.excluido),[items]);
-  const empI=useMemo(()=>ativos.filter(t=>t.centro==="empresa").sort((a,b)=>b.data.localeCompare(a.data)),[ativos]);
-  const pesI=useMemo(()=>ativos.filter(t=>t.centro==="pessoal").sort((a,b)=>b.data.localeCompare(a.data)),[ativos]);
+  const contaveis=useMemo(()=>ativos.filter(t=>t.categoria!=="Liquidacao de Fatura"),[ativos]);
+  const empI=useMemo(()=>contaveis.filter(t=>t.centro==="empresa").sort((a,b)=>b.data.localeCompare(a.data)),[contaveis]);
+  const pesI=useMemo(()=>contaveis.filter(t=>t.centro==="pessoal").sort((a,b)=>b.data.localeCompare(a.data)),[contaveis]);
+  const empHist=useMemo(()=>ativos.filter(t=>t.centro==="empresa").sort((a,b)=>b.data.localeCompare(a.data)),[ativos]);
+  const pesHist=useMemo(()=>ativos.filter(t=>t.centro==="pessoal").sort((a,b)=>b.data.localeCompare(a.data)),[ativos]);
   const totE=useMemo(()=>empI.reduce((s,t)=>s+t.valor,0),[empI]);
   const totP=useMemo(()=>pesI.reduce((s,t)=>s+t.valor,0),[pesI]);
   const total=totE+totP;
@@ -631,7 +635,7 @@ export default function AppIsaque(){
           </div>
           <div style={{minWidth:0,flex:1}}>
             <div style={{fontSize:14,fontWeight:700,color:t.excluido?"#AAA":"#1A1A1A",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",textDecoration:t.excluido?"line-through":"none"}}>
-              {t.descricao}{t.recorrente&&!t.excluido&&<span className="badge-rec">REC</span>}
+              {t.descricao}{t.recorrente&&!t.excluido&&<span className="badge-rec">REC</span>}{t.categoria==="Liquidacao de Fatura"&&!t.excluido&&<span className="badge-liq">LIQUIDAÇÃO</span>}
             </div>
             <div style={{fontSize:11,color:"#999",marginTop:2}}>{t.categoria} · {t.meio}</div>
             {t.excluido&&t.motivo_exclusao&&<div style={{fontSize:10,color:"#CC0000",marginTop:1,fontWeight:600}}>Excluido: {t.motivo_exclusao}</div>}
@@ -758,9 +762,9 @@ export default function AppIsaque(){
         {view==="historico"&&(
           <>
             <div style={{fontSize:10,color:"#AAA",letterSpacing:".18em",textTransform:"uppercase",marginBottom:14,fontWeight:600}}>{items.length} lancamentos - {ML[mes]}</div>
-            {totE>0&&<Coll label="Empresa" list={empI} tot={totE} cor="#CC0000" open={collE} toggle={()=>setCollE(o=>!o)}/>}
-            {totP>0&&<Coll label="Pessoal" list={pesI} tot={totP} cor="#666666" open={collP} toggle={()=>setCollP(o=>!o)}/>}
-            {total===0&&<div style={{textAlign:"center",padding:"40px 0",color:"#CCC",fontSize:14}}>Nenhum lancamento neste mes.</div>}
+            {empHist.length>0&&<Coll label="Empresa" list={empHist} tot={totE} cor="#CC0000" open={collE} toggle={()=>setCollE(o=>!o)}/>}
+            {pesHist.length>0&&<Coll label="Pessoal" list={pesHist} tot={totP} cor="#666666" open={collP} toggle={()=>setCollP(o=>!o)}/>}
+            {empHist.length===0&&pesHist.length===0&&<div style={{textAlign:"center",padding:"40px 0",color:"#CCC",fontSize:14}}>Nenhum lancamento neste mes.</div>}
           </>
         )}
         {view==="categorias"&&(
