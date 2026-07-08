@@ -431,6 +431,12 @@ function DelReceitaSheet({receita,onDone,onClose}){
 
 // ─── AJUDANTES p/ Caixa DE→ATÉ ─────────────────────────────────────────────
 function primeiroDiaDoMes(){const d=new Date();return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-01`;}
+function primeiroDiaDe(mesStr){return `${mesStr}-01`;}
+function ultimoDiaDe(mesStr){
+  const [y,m]=mesStr.split("-").map(Number);
+  const ultimo=new Date(y,m,0).getDate();
+  return `${mesStr}-${String(ultimo).padStart(2,"0")}`;
+}
 function mesesEntre(de,ate){
   const arr=[]; const [ay,am]=de.slice(0,7).split("-").map(Number);
   const [by,bm]=ate.slice(0,7).split("-").map(Number);
@@ -442,14 +448,20 @@ function mesesEntre(de,ate){
   return arr;
 }
 
-function CaixaView(){
-  const [dataDe,setDataDe]=useState(primeiroDiaDoMes());
-  const [dataAte,setDataAte]=useState(hoje());
+function CaixaView({mes}){
+  const [dataDe,setDataDe]=useState(primeiroDiaDe(mes));
+  const [dataAte,setDataAte]=useState(mes===primeiroDiaDoMes().slice(0,7)?hoje():ultimoDiaDe(mes));
   const [receitas,setReceitas]=useState([]);
   const [despesas,setDespesas]=useState([]);
   const [loading,setLoading]=useState(true);
   const [showForm,setShowForm]=useState(false);
   const [delReceita,setDelReceita]=useState(null);
+
+  useEffect(()=>{
+    const hojeMes=primeiroDiaDoMes().slice(0,7);
+    setDataDe(primeiroDiaDe(mes));
+    setDataAte(mes===hojeMes?hoje():ultimoDiaDe(mes));
+  },[mes]);
 
   const load=useCallback(async()=>{
     if(dataDe>dataAte)return;
@@ -485,7 +497,11 @@ function CaixaView(){
   const saldo=totalReceita-totalDespesa;
   const receitasOrd=[...receitas].sort((a,b)=>(b.data_de||b.semana||b.data).localeCompare(a.data_de||a.semana||a.data));
 
-  function setEsteMe(){setDataDe(primeiroDiaDoMes());setDataAte(hoje());}
+  function setEsteMe(){
+    const hojeMes=primeiroDiaDoMes().slice(0,7);
+    setDataDe(primeiroDiaDe(mes));
+    setDataAte(mes===hojeMes?hoje():ultimoDiaDe(mes));
+  }
 
   return (
     <div>
@@ -502,7 +518,7 @@ function CaixaView(){
             <input type="date" value={dataAte} onChange={e=>setDataAte(e.target.value)} style={{width:"100%",border:"2px solid #EEE",borderRadius:8,padding:"9px 10px",fontSize:14,fontFamily:"'Barlow Condensed',sans-serif",fontWeight:600,outline:"none"}}/>
           </div>
         </div>
-        <button onClick={setEsteMe} style={{background:"none",border:"1.5px solid #DDD",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#888",fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:".08em",textTransform:"uppercase"}}>Este mês</button>
+        <button onClick={setEsteMe} style={{background:"none",border:"1.5px solid #DDD",borderRadius:7,padding:"6px 12px",fontSize:11,color:"#888",fontWeight:700,cursor:"pointer",fontFamily:"'Barlow Condensed',sans-serif",letterSpacing:".08em",textTransform:"uppercase"}}>Mes Inteiro ({ML[mes]})</button>
       </div>
 
       {loading?<div style={{textAlign:"center",padding:"30px 0"}}><span className="spin"/></div>:(
@@ -738,7 +754,7 @@ export default function AppIsaque(){
             )}
           </>
         )}
-        {view==="caixa"&&<CaixaView/>}
+        {view==="caixa"&&<CaixaView mes={mes}/>}
         {view==="historico"&&(
           <>
             <div style={{fontSize:10,color:"#AAA",letterSpacing:".18em",textTransform:"uppercase",marginBottom:14,fontWeight:600}}>{items.length} lancamentos - {ML[mes]}</div>
