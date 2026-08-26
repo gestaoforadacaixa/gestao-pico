@@ -11,6 +11,7 @@ async function sbPatch(id,body){try{const r=await fetch(`${SUPA_URL}/rest/v1/lan
 async function rcGet(mes){try{const r=await fetch(`${SUPA_URL}/rest/v1/receitas?cliente_id=eq.${CID}&mes=eq.${mes}&order=semana.desc`,{headers:H});return r.ok?r.json():[];}catch{return[];}}
 async function rcPost(body){try{const r=await fetch(`${SUPA_URL}/rest/v1/receitas`,{method:"POST",headers:H,body:JSON.stringify(body)});return r.ok?r.json():null;}catch{return null;}}
 async function rcDelete(id){try{const r=await fetch(`${SUPA_URL}/rest/v1/receitas?id=eq.${id}`,{method:"DELETE",headers:H});return r.ok;}catch{return false;}}
+async function fetchCategorias(){try{const r=await fetch(`${SUPA_URL}/rest/v1/categorias?cliente_id=eq.${CID}&order=nome.asc`,{headers:H});return r.ok?r.json():[];}catch{return[];}}
 
 const fmt  = v => v.toLocaleString("pt-BR",{style:"currency",currency:"BRL"});
 const uid  = () => (crypto?.randomUUID?.()??Math.random().toString(36).slice(2)+Date.now());
@@ -18,8 +19,8 @@ const fd   = d => { const[,m,day]=d.split("-"); return `${day}/${m}`; };
 const hoje = () => new Date().toISOString().slice(0,10);
 
 
-const CATS_EMP=["Administrativo","Funcionario","Infraestrutura","Insumos","Investimento","Liquidacao de Fatura","Marketing","Outros"];
-const CATS_PES=["Alimentacao","Compromissos Financeiros","Lazer","Liquidacao de Fatura","Moradia","Reserva","Transporte","Outros"];
+let CATS_EMP=["Administrativo","Funcionario","Infraestrutura","Insumos","Investimento","Liquidacao de Fatura","Marketing","Outros"];
+let CATS_PES=["Alimentacao","Compromissos Financeiros","Lazer","Liquidacao de Fatura","Moradia","Reserva","Transporte","Outros"];
 const MEIOS=["Credito","Debito","Dinheiro","Pix"];
 const NOMES_MES=["Janeiro","Fevereiro","Marco","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 const DIAS_SEMANA=["Dom","Seg","Ter","Qua","Qui","Sex","Sab"];
@@ -605,6 +606,19 @@ export default function AppIsaque(){
     if(!silent)setLoading(false);
   },[mes]);
   useEffect(()=>{setItems([]);load();},[load]);
+  const [,forceCatUpdate]=useState(0);
+  useEffect(()=>{
+    fetchCategorias().then(res=>{
+      if(res&&res.length>0){
+        const emp=res.filter(r=>r.centro!=="pessoal").map(r=>r.nome);
+        const pes=res.filter(r=>r.centro==="pessoal").map(r=>r.nome);
+        if(emp.length) CATS_EMP=emp;
+        if(pes.length) CATS_PES=pes;
+        res.forEach(r=>{ CAT_COR[r.nome]=r.cor; });
+        forceCatUpdate(v=>v+1);
+      }
+    });
+  },[]);
   useEffect(()=>{
     if(showForm||del||editItem)return;
     const t=setInterval(()=>load(true),5000);
