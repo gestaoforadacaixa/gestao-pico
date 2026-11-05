@@ -4,6 +4,7 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 const SUPA_URL = "https://oltwaosdzgvbbvermilk.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9sdHdhb3Nkemd2YmJ2ZXJtaWxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1NDU3MjksImV4cCI6MjA5NDEyMTcyOX0.WbDR65w6eywTgLc4Lwii_63RrJwKPN9oj1DsgjxeFBo";
 // Cliente padrão "pico". Para testar sem mexer nos dados reais, abra o link com ?cliente=pico-teste
+const APP_VERSAO = "v05.11-1530";   // muda a cada publicação: confira no cabeçalho se a versão nova subiu
 const CID = (() => { try { return new URLSearchParams(window.location.search).get("cliente") || "pico"; } catch { return "pico"; } })();
 const H = {
   "Content-Type": "application/json",
@@ -14,8 +15,8 @@ const H = {
 async function sbGet(mes) {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/lancamentos?cliente_id=eq.${CID}&mes=eq.${mes}&order=data.desc`, { headers: H });
-    return r.ok ? r.json() : [];
-  } catch { return []; }
+    return r.ok ? r.json() : null;   // null = falhou (a tela mantém o que já tinha)
+  } catch { return null; }
 }
 async function sbPost(body) {
   try {
@@ -32,8 +33,8 @@ async function sbPatch(id, body) {
 async function rcGet(mes) {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/receitas?cliente_id=eq.${CID}&mes=eq.${mes}&order=semana.desc`, { headers: H });
-    return r.ok ? r.json() : [];
-  } catch { return []; }
+    return r.ok ? r.json() : null;   // null = falhou (a tela mantém o que já tinha)
+  } catch { return null; }
 }
 async function rcPost(body) {
   try {
@@ -76,8 +77,9 @@ const uid = () => (crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)
 async function tbGet(tabela, q="") {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/${tabela}?cliente_id=eq.${CID}${q?"&"+q:""}`, { headers: H });
-    return r.ok ? r.json() : [];
-  } catch { return []; }
+    if (r.status>=400 && r.status<500) return [];   // tabela ainda não existe: segue vazio
+    return r.ok ? r.json() : null;                   // erro de servidor/rede: mantém o que já tinha
+  } catch { return null; }
 }
 async function tbPost(tabela, body) {
   try {
@@ -619,8 +621,8 @@ async function fetchRange(ini, fim) {
       fetch(`${SUPA_URL}/rest/v1/receitas?cliente_id=eq.${CID}&mes=gte.${ini}&mes=lte.${fim}&order=semana.desc`, { headers: H }),
     ]);
     const t = await tbGet("transferencias", `mes=gte.${ini}&mes=lte.${fim}&order=data.desc`);
-    return { l: a.ok ? await a.json() : [], r: b.ok ? (await b.json()).filter(x=>!x.excluido) : [], t: (t||[]).filter(x=>!x.excluido) };
-  } catch { return { l: [], r: [], t: [] }; }
+    return { l: a.ok ? await a.json() : [], r: b.ok ? (await b.json()).filter(x=>!x.excluido) : [], t: (t||[]).filter(x=>!x.excluido), falhou: !a.ok || !b.ok };
+  } catch { return { l: [], r: [], t: [], falhou: true }; }
 }
 const somaV = a => a.reduce((s,x)=>s+x.valor,0);
 const agCat = list => { const m={}; list.forEach(l=>{m[l.categoria]=(m[l.categoria]||0)+l.valor;}); return Object.entries(m).map(([cat,val])=>({cat,val,cor:CAT_CORES[cat]||"#999"})).sort((a,b)=>b.val-a.val); };
@@ -1053,6 +1055,7 @@ export default function App() {
   const [allReceitas,setAllReceitas]       = useState(INIT_RECEITAS);
   const [loading,setLoading]               = useState(true);
   const [lastSync,setLastSync]             = useState(null);
+  const [offline,setOffline]               = useState(false);
   const [,forceCatUpdate]                  = useState(0);
   const [view,setView]                     = useState("caixa");
   const [visao,setVisaoSt]                 = useState(lerVisao);
@@ -1122,9 +1125,9 @@ export default function App() {
       tbGet("transferencias", "order=data.desc"),
       tbGet("metas", "order=criado_em.asc"),
     ]);
-    setTransfRaw(tRaw||[]);
-    setGlob({ l:g.l, r:g.r, t:(tRaw||[]).filter(x=>!x.excluido) });
-    setMetas((mt||[]).filter(x=>!x.excluido));
+    if (!g.falhou) setGlob({ l:g.l, r:g.r, t:(tRaw||[]).filter(x=>!x.excluido) });
+    if (tRaw) setTransfRaw(tRaw);
+    if (mt) setMetas(mt.filter(x=>!x.excluido));
   }, []);
   const load = useCallback(async (silent=false) => {
     if (!silent) setLoading(true);
@@ -1133,9 +1136,10 @@ export default function App() {
       mesAnt ? sbGet(mesAnt.mes) : Promise.resolve([]),
       rcGet(mesAtual.mes),
     ]);
-    setAllItems(p => ({...p, [mesAtual.mes]: (dAtual||[]), ...(mesAnt ? {[mesAnt.mes]: (dAnt||[])} : {})}));
-    setAllReceitas(p => ({...p, [mesAtual.mes]: rAtual||[]}));
-    setLastSync(new Date());
+    setAllItems(p => ({...p, ...(dAtual ? {[mesAtual.mes]: dAtual} : {}), ...(mesAnt && dAnt ? {[mesAnt.mes]: dAnt} : {})}));
+    if (rAtual) setAllReceitas(p => ({...p, [mesAtual.mes]: rAtual}));
+    setOffline(!dAtual || !rAtual);
+    if (dAtual && rAtual) setLastSync(new Date());
     if (!silent) { setLoading(false); loadGlobal(); }
   }, [mesAtual.mes, mesAnt, loadGlobal]);
 
@@ -1516,10 +1520,11 @@ export default function App() {
             <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A",lineHeight:1.1,fontFamily:"'Inter',sans-serif"}}>Pico Barber Shop</div>
             <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
               <span style={{fontSize:11,color:"#888888",letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:600}}>Olá, Isaque</span>
+              <span title="Versão do app no ar" style={{fontSize:9,color:"#AAAAAA",fontWeight:600}}>{APP_VERSAO}</span>
               {lastSync && (
-                <span style={{display:"inline-flex",alignItems:"center",gap:4,background:"#E6F4EE",border:"1px solid #00875A33",borderRadius:16,padding:"2px 8px",fontSize:9,color:"#00875A",fontWeight:700,letterSpacing:"0.04em"}}>
-                  <span style={{width:5,height:5,background:"#00875A",borderRadius:"50%"}}/>
-                  {loading ? "Sync" : "Online"}
+                <span style={{display:"inline-flex",alignItems:"center",gap:4,background:offline?"#FBECEA":"#E6F4EE",border:`1px solid ${offline?"#CC000033":"#00875A33"}`,borderRadius:16,padding:"2px 8px",fontSize:9,color:offline?"#CC0000":"#00875A",fontWeight:700,letterSpacing:"0.04em"}}>
+                  <span style={{width:5,height:5,background:offline?"#CC0000":"#00875A",borderRadius:"50%"}}/>
+                  {offline ? "Sem conexão" : loading ? "Sync" : "Online"}
                 </span>
               )}
             </div>
