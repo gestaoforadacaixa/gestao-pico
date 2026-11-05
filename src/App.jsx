@@ -4,7 +4,6 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 const SUPA_URL = "https://oltwaosdzgvbbvermilk.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9sdHdhb3Nkemd2YmJ2ZXJtaWxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1NDU3MjksImV4cCI6MjA5NDEyMTcyOX0.WbDR65w6eywTgLc4Lwii_63RrJwKPN9oj1DsgjxeFBo";
 // Cliente padrão "pico". Para testar sem mexer nos dados reais, abra o link com ?cliente=pico-teste
-const APP_VERSAO = "v05.11-1530";   // muda a cada publicação: confira no cabeçalho se a versão nova subiu
 const CID = (() => { try { return new URLSearchParams(window.location.search).get("cliente") || "pico"; } catch { return "pico"; } })();
 const H = {
   "Content-Type": "application/json",
@@ -15,8 +14,8 @@ const H = {
 async function sbGet(mes) {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/lancamentos?cliente_id=eq.${CID}&mes=eq.${mes}&order=data.desc`, { headers: H });
-    return r.ok ? r.json() : null;   // null = falhou (a tela mantém o que já tinha)
-  } catch { return null; }
+    return r.ok ? r.json() : [];
+  } catch { return []; }
 }
 async function sbPost(body) {
   try {
@@ -33,8 +32,8 @@ async function sbPatch(id, body) {
 async function rcGet(mes) {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/receitas?cliente_id=eq.${CID}&mes=eq.${mes}&order=semana.desc`, { headers: H });
-    return r.ok ? r.json() : null;   // null = falhou (a tela mantém o que já tinha)
-  } catch { return null; }
+    return r.ok ? r.json() : [];
+  } catch { return []; }
 }
 async function rcPost(body) {
   try {
@@ -77,9 +76,8 @@ const uid = () => (crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)
 async function tbGet(tabela, q="") {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/${tabela}?cliente_id=eq.${CID}${q?"&"+q:""}`, { headers: H });
-    if (r.status>=400 && r.status<500) return [];   // tabela ainda não existe: segue vazio
-    return r.ok ? r.json() : null;                   // erro de servidor/rede: mantém o que já tinha
-  } catch { return null; }
+    return r.ok ? r.json() : [];
+  } catch { return []; }
 }
 async function tbPost(tabela, body) {
   try {
@@ -173,25 +171,58 @@ function previsao(g, visao, dias) {
 }
 const GRUPOS_META = {
   financeira: { nome:"Financeira", icone:"💰", desc:"Valores em R$: faturamento, reserva, limite de gasto ou um valor livre." },
-  objetiva:   { nome:"Objetiva",   icone:"🎯", desc:"Conquistas: contratar, concluir uma obra, chegar a 100 assinantes." },
+  objetiva:   { nome:"Objetiva",   icone:"🎯", desc:"Conquistas e hábitos: contar, cumprir etapas, marcar os dias no calendário." },
 };
 const TIPOS_META = {
   faturamento: { grupo:"financeira", nome:"Faturamento mensal", icone:"📈", desc:"Receita recebida no mês até chegar no alvo. Renova todo mês.", auto:true, mensal:true },
   acumular:    { grupo:"financeira", nome:"Reserva",            icone:"🏦", desc:"Soma a sobra de caixa desde a data de início.", auto:true },
   limite:      { grupo:"financeira", nome:"Limite de gasto",    icone:"🛡️", desc:"Gastar no máximo o limite no mês (total ou de uma categoria). Renova todo mês.", auto:true, mensal:true },
   valor:       { grupo:"financeira", nome:"Valor livre",        icone:"💵", desc:"Você informa quanto já tem (ex.: juntar para a reforma).", auto:false },
-  quantidade:  { grupo:"objetiva",   nome:"Quantidade",         icone:"🔢", desc:"Contar até um número (ex.: 100 assinantes, 2 barbeiros novos).", auto:false },
-  etapas:      { grupo:"objetiva",   nome:"Etapas",             icone:"✅", desc:"Checklist: cada etapa concluída faz a meta avançar.", auto:false },
+  objetiva:    { grupo:"objetiva",   nome:"Objetiva",           icone:"🎯", desc:"", auto:false },
 };
-const tipoMeta = t => t==="manual" ? "valor" : (TIPOS_META[t] ? t : "valor");
-const lerEtapas = m => { let e=m.etapas; if(typeof e==="string"){ try{ e=JSON.parse(e); }catch{ e=[]; } } return Array.isArray(e)?e:[]; };
-const fmtMeta = (m, v) => { const t=tipoMeta(m.tipo); return t==="quantidade" ? `${Math.round(v).toLocaleString("pt-BR")}${m.unidade?" "+m.unidade:""}` : t==="etapas" ? `${v} etapa${v===1?"":"s"}` : fmt(v); };
+// Medidores da meta objetiva — dá para usar mais de um na mesma meta
+const MEDIDORES = {
+  quantidade: { nome:"Quantidade", icone:"🔢", desc:"Contar até um número (ex.: 100 assinantes)." },
+  etapas:     { nome:"Etapas",     icone:"✅", desc:"Checklist: cada etapa concluída avança." },
+  calendario: { nome:"Calendário", icone:"📅", desc:"Marcar no calendário cada dia cumprido (ex.: postar todo dia)." },
+};
+const tipoMeta = t => (t==="quantidade"||t==="etapas"||t==="objetiva") ? "objetiva" : t==="manual" ? "valor" : (TIPOS_META[t] ? t : "valor");
+const lerJson = (v, padrao) => { let e=v; if(typeof e==="string"){ try{ e=JSON.parse(e); }catch{ e=padrao; } } return e ?? padrao; };
+const lerEtapas = m => { const e=lerJson(m.etapas, []); return Array.isArray(e)?e:[]; };
+const lerCheckins = m => { const e=lerJson(m.checkins, []); return Array.isArray(e)?[...new Set(e)].sort():[]; };
+const medidoresDe = m => { const md=lerJson(m.medidores, null); if(Array.isArray(md)&&md.length) return md.filter(k=>MEDIDORES[k]); return (m.tipo==="quantidade"||m.tipo==="etapas") ? [m.tipo] : []; };
+const fmtQtd = (m, v) => `${Math.round(v).toLocaleString("pt-BR")}${m.unidade?" "+m.unidade:""}`;
+const fmtMeta = (m, v) => tipoMeta(m.tipo)==="objetiva" ? `${Math.round(v)}%` : fmt(v);
 const fracMes = () => { const h=hoje(), [y,m,d]=h.split("-").map(Number); return d/new Date(y,m,0).getDate(); };
+// Calendário: quantos dias marcados são necessários entre o início e o prazo
+function alvoCalendario(m) {
+  const ini = m.data_inicio || (m.criado_em||"").slice(0,10) || hoje();
+  if (!m.prazo || m.prazo<ini) return 0;
+  const dias = diasEntre(ini, m.prazo) + 1;
+  return m.cal_freq==="semana" ? Math.max(1, Math.ceil(dias/7*(Number(m.cal_vezes)||1))) : dias;
+}
+// Sequência de dias seguidos marcados, contando de hoje (ou de ontem, se hoje ainda não foi marcado)
+function sequencia(lista) {
+  const s=new Set(lista); let d=hoje(); if(!s.has(d)) d=addDias(d,-1);
+  let n=0; while(s.has(d)){ n++; d=addDias(d,-1); } return n;
+}
+// Progresso de cada medidor da meta objetiva
+function progMedidores(m) {
+  return medidoresDe(m).map(k=>{
+    if (k==="quantidade") { const alvo=Number(m.valor_alvo)||0, atual=Number(m.valor_atual)||0;
+      return { k, atual, alvo, pct: alvo>0?atual/alvo:0, txt:`${fmtQtd(m,atual)} de ${fmtQtd(m,alvo)}`, falta: alvo>atual?`faltam ${fmtQtd(m,alvo-atual)}`:"" }; }
+    if (k==="etapas") { const e=lerEtapas(m), alvo=e.length, atual=e.filter(x=>x.ok).length;
+      return { k, atual, alvo, pct: alvo>0?atual/alvo:0, txt:`${atual} de ${alvo} etapas`, falta: alvo>atual?`falta${alvo-atual>1?"m":""} ${alvo-atual} etapa${alvo-atual>1?"s":""}`:"" }; }
+    const ini = m.data_inicio || (m.criado_em||"").slice(0,10) || hoje();
+    const ck = lerCheckins(m).filter(d=>d>=ini && (!m.prazo||d<=m.prazo)), alvo=alvoCalendario(m), atual=ck.length;
+    return { k, atual, alvo, pct: alvo>0?atual/alvo:0, txt:`${atual} de ${alvo} dias marcados`, falta: alvo>atual?`faltam ${alvo-atual} dias`:"", seq: sequencia(ck), hojeOk: ck.includes(hoje()) };
+  });
+}
 // Progresso de uma meta: atual, alvo, %, status, prazo e a "dica" do que falta
 function progMeta(mt, g) {
   const hj=hoje(), mh=hj.slice(0,7), tipo=tipoMeta(mt.tipo), T=TIPOS_META[tipo], c=mt.centro||"empresa";
   const [yy,mm]=mh.split("-").map(Number), fimMes=`${mh}-${String(new Date(yy,mm,0).getDate()).padStart(2,"0")}`;
-  let alvo=Number(mt.valor_alvo)||0, atual=0, detalhe="";
+  let alvo=Number(mt.valor_alvo)||0, atual=0, detalhe="", meds=null;
   if (tipo==="faturamento") {
     atual = g.r.filter(r=>naVisao(c,r)&&(dataRec(r)||"").slice(0,7)===mh&&!recProg(r)).reduce((s,r)=>s+r.valor,0);
     detalhe = "recebido neste mês";
@@ -201,9 +232,11 @@ function progMeta(mt, g) {
   } else if (tipo==="limite") {
     atual = g.l.filter(l=>despesaConta(l)&&naVisao(c,l)&&l.mes===mh&&l.data<=hj&&(!mt.categoria||l.categoria===mt.categoria)).reduce((s,l)=>s+l.valor,0);
     detalhe = mt.categoria ? `gasto em ${mt.categoria} neste mês` : "despesa total deste mês";
-  } else if (tipo==="etapas") {
-    const e=lerEtapas(mt); alvo=e.length; atual=e.filter(x=>x.ok).length;
-    detalhe = `${atual} de ${alvo} etapas concluídas`;
+  } else if (tipo==="objetiva") {
+    meds = progMedidores(mt);
+    const media = meds.length ? meds.reduce((s,x)=>s+Math.min(1,x.pct),0)/meds.length : 0;
+    atual = Math.round(media*100); alvo = 100;
+    detalhe = meds.map(x=>x.txt).join(" · ");
   } else {
     atual = Number(mt.valor_atual)||0; detalhe = "atualizado por você";
   }
@@ -215,9 +248,7 @@ function progMeta(mt, g) {
   if (tipo==="faturamento") dica = falta>0 ? `Faltam ${fmt(falta)} · ${fmt(falta/diasCont)} por dia até o fim do mês` : "Alvo do mês batido!";
   else if (tipo==="limite") dica = atual<=alvo ? `Pode gastar ${fmt((alvo-atual)/diasCont)} por dia até o fim do mês` : `${fmt(atual-alvo)} acima do limite`;
   else if (falta>0 && (tipo==="acumular"||tipo==="valor")) dica = diasRest>0 ? `Faltam ${fmt(falta)} · cerca de ${fmt(falta/Math.max(1,diasRest/30))} por mês` : `Faltam ${fmt(falta)}`;
-  else if (falta>0 && tipo==="quantidade") dica = `Faltam ${fmtMeta(mt,falta)}`;
-  else if (falta>0 && tipo==="etapas") dica = `Falta${falta>1?"m":""} ${falta} etapa${falta>1?"s":""}`;
-  // Realizada: concluída (data registrada) ou, na reserva automática, quando o saldo chega no alvo
+  else if (tipo==="objetiva" && meds) { const f=meds.map(x=>x.falta).filter(Boolean); dica = f.length ? f.join(" · ").replace(/^./,x=>x.toUpperCase()) : ""; }
   const realizada = !!mt.concluida_em || (tipo==="acumular" && alvo>0 && pct>=1);
   const OK={cor:"#00875A",fundo:"#E6F4EE",nivel:0}, AT={cor:"#A6822E",fundo:"#FBF3E4",nivel:1}, CR={cor:"#B4483C",fundo:"#FBECEA",nivel:2};
   let status;
@@ -233,50 +264,52 @@ function progMeta(mt, g) {
     else if (mt.prazo && ini && mt.prazo>ini) esperado = Math.min(1, Math.max(0, diasEntre(ini,hj)/diasEntre(ini,mt.prazo)));
     status = esperado!=null && pct < esperado-0.15 ? {...AT,txt:"abaixo do ritmo"} : {...OK,txt:"no ritmo"};
   }
-  return { tipo, atual, alvo, pct, status, detalhe, dica, diasRest, mensal:!!T.mensal, realizada };
+  return { tipo, atual, alvo, pct, status, detalhe, dica, diasRest, mensal:!!T.mensal, realizada, meds };
 }
-// Central de alertas: regras simples, cada uma com motivo, impacto e ação recomendada
-function gerarAlertas(g, metas, visao) {
-  const hj=hoje(), mh=hj.slice(0,7), out=[];
-  const centros = visao==="ambos" ? ["empresa","pessoal"] : [visao];
-  // 0) Contas que vencem hoje
-  const hojeL = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.data===hj);
-  if (hojeL.length) out.push({ nivel:2, hoje:true, titulo:`${hojeL.length} conta${hojeL.length>1?"s":""} para pagar hoje`,
-    motivo: hojeL.slice(0,4).map(l=>`${l.descricao} (${fmt(l.valor)})`).join(", ")+(hojeL.length>4?"…":""),
-    impacto:`${fmt(hojeL.reduce((s,l)=>s+l.valor,0))} vencendo hoje`, acao:"Pague hoje para evitar juros e multa. Se já pagou, está tudo certo." });
-  // 1) Contas programadas vencendo em até 3 dias
-  const vence = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.data>hj&&l.data<=addDias(hj,3)).sort((a,b)=>a.data.localeCompare(b.data));
-  if (vence.length) out.push({ nivel:1, titulo:`${vence.length} conta${vence.length>1?"s":""} vencendo nos próximos 3 dias`,
-    motivo: vence.slice(0,3).map(l=>`${l.descricao} (${fmtDate(l.data)})`).join(", ")+(vence.length>3?"…":""),
-    impacto:`${fmt(vence.reduce((s,l)=>s+l.valor,0))} saindo do caixa`, acao:"Confira se há saldo e execute no dia certo." });
-  // 2) Caixa previsto negativo em 30 dias (real, sem contar estimativa de entradas)
+// Central de alertas: SEMPRE olha os dois lados (Pico Barbershop e Isaque), qualquer que seja o perfil
+// selecionado no topo. Cada alerta sai com o "centro" de quem é, para a etiqueta.
+function gerarAlertas(g, metas) {
+  const hj=hoje(), mh=hj.slice(0,7), out=[], centros=["empresa","pessoal"];
+  const nomeC = c => VISOES[c].nome;
   centros.forEach(c=>{
+    // 0) Contas que vencem hoje
+    const hojeL = g.l.filter(l=>despesaConta(l)&&centroDe(l)===c&&l.data===hj);
+    if (hojeL.length) out.push({ centro:c, nivel:2, hoje:true, titulo:`${hojeL.length} conta${hojeL.length>1?"s":""} para pagar hoje`,
+      motivo: hojeL.slice(0,4).map(l=>`${l.descricao} (${fmt(l.valor)})`).join(", ")+(hojeL.length>4?"…":""),
+      total: hojeL.reduce((s,l)=>s+l.valor,0),
+      impacto:`${fmt(hojeL.reduce((s,l)=>s+l.valor,0))} vencendo hoje`, acao:"Pague hoje para evitar juros e multa. Se já pagou, está tudo certo." });
+    // 1) Contas programadas vencendo nos próximos 3 dias
+    const vence = g.l.filter(l=>despesaConta(l)&&centroDe(l)===c&&l.data>hj&&l.data<=addDias(hj,3)).sort((a,b)=>a.data.localeCompare(b.data));
+    if (vence.length) out.push({ centro:c, nivel:1, titulo:`${vence.length} conta${vence.length>1?"s":""} vencendo nos próximos 3 dias`,
+      motivo: vence.slice(0,3).map(l=>`${l.descricao} (${fmtDate(l.data)})`).join(", ")+(vence.length>3?"…":""),
+      impacto:`${fmt(vence.reduce((s,l)=>s+l.valor,0))} saindo do caixa`, acao:"Confira se há saldo e execute no dia certo." });
+    // 2) Caixa previsto negativo em 30 dias (real, sem contar estimativa de entradas)
     const p = previsao(g, c, 30);
-    if (p.semEstimativa<0) out.push({ nivel: p.comEstimativa<0?2:1, titulo:`Caixa ${VISOES[c].nome} pode ficar negativo em 30 dias`,
+    if (p.semEstimativa<0) out.push({ centro:c, nivel: p.comEstimativa<0?2:1, titulo:`Caixa pode ficar negativo em 30 dias`,
       motivo:`Saldo hoje ${fmt(p.saldoHoje)}, contas programadas ${fmt(p.saidas)}.`,
       impacto: p.comEstimativa<0 ? `Mesmo com as entradas estimadas, fecha em ${fmt(p.comEstimativa)}.` : `Fecha em ${fmt(p.semEstimativa)} se não entrar dinheiro; com a média de entradas, ${fmt(p.comEstimativa)}.`,
       acao:"Reveja contas programadas ou antecipe recebimentos." });
+    // 3) Queda de receita vs mesmo período do mês anterior (a partir do dia 7)
+    const dia = parseInt(hj.slice(8,10),10);
+    if (dia>=7) {
+      const [y,m]=mh.split("-").map(Number), ma=`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,"0")}`;
+      const ate = (r,mk)=>{ const d=dataRec(r)||""; return d.slice(0,7)===mk && parseInt(d.slice(8,10),10)<=dia; };
+      const atual = g.r.filter(r=>centroDe(r)===c&&ate(r,mh)).reduce((s,r)=>s+r.valor,0);
+      const ant   = g.r.filter(r=>centroDe(r)===c&&ate(r,ma)).reduce((s,r)=>s+r.valor,0);
+      if (ant>0 && atual<ant*0.8) out.push({ centro:c, nivel: atual<ant*0.6?2:1, titulo:`Receita ${(((ant-atual)/ant)*100).toFixed(0)}% abaixo do mês passado`,
+        motivo:`Até o dia ${dia}: ${fmt(atual)} agora contra ${fmt(ant)} no mês anterior.`, impacto:`Diferença de ${fmt(ant-atual)}.`,
+        acao:"Verifique se todas as receitas foram lançadas e o movimento da agenda." });
+    }
   });
-  // 4) Metas atrasadas ou fora do ritmo
-  metas.filter(m=>!m.excluido&&naVisao(visao,m)).forEach(m=>{
+  // 4) Metas atrasadas ou fora do ritmo (de quem for a meta)
+  metas.filter(m=>!m.excluido).forEach(m=>{
     const p = progMeta(m, g);
-    if (p.status.nivel>0) out.push({ nivel:p.status.nivel, titulo:`Meta "${m.nome}": ${p.status.txt}`,
+    if (p.status.nivel>0) out.push({ centro:m.centro||"empresa", nivel:p.status.nivel, titulo:`Meta "${m.nome}": ${p.status.txt}`,
       motivo:`${fmtMeta(m,p.atual)} de ${fmtMeta(m,p.alvo)} (${(p.pct*100).toFixed(0)}%) — ${p.detalhe}.`,
       impacto: m.tipo==="limite"?"Despesa acima do planejado.":"Objetivo pode não ser atingido no prazo.",
       acao: m.tipo==="limite"?"Reduza os gastos ligados a essa meta.":"Reveja o plano ou ajuste o prazo da meta." });
   });
-  // 5) Queda de faturamento vs mesmo período do mês anterior (a partir do dia 7)
-  const dia = parseInt(hj.slice(8,10),10);
-  if (dia>=7) centros.forEach(c=>{
-    const [y,m]=mh.split("-").map(Number), ma=`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,"0")}`;
-    const ate = (r,mk)=>{ const d=dataRec(r)||""; return d.slice(0,7)===mk && parseInt(d.slice(8,10),10)<=dia; };
-    const atual = g.r.filter(r=>naVisao(c,r)&&ate(r,mh)).reduce((s,r)=>s+r.valor,0);
-    const ant   = g.r.filter(r=>naVisao(c,r)&&ate(r,ma)).reduce((s,r)=>s+r.valor,0);
-    if (ant>0 && atual<ant*0.8) out.push({ nivel: atual<ant*0.6?2:1, titulo:`Receita ${VISOES[c].nome} ${(((ant-atual)/ant)*100).toFixed(0)}% abaixo do mês passado`,
-      motivo:`Até o dia ${dia}: ${fmt(atual)} agora contra ${fmt(ant)} no mês anterior.`, impacto:`Diferença de ${fmt(ant-atual)}.`,
-      acao:"Verifique se todas as receitas foram lançadas e o movimento da agenda." });
-  });
-  return out.sort((a,b)=>b.nivel-a.nivel);
+  return out.sort((a,b)=>b.nivel-a.nivel || (a.centro==="empresa"?-1:1));
 }
 const MESES_NOMES_FULL = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 const MES_INICIO = "2026-05";
@@ -621,8 +654,8 @@ async function fetchRange(ini, fim) {
       fetch(`${SUPA_URL}/rest/v1/receitas?cliente_id=eq.${CID}&mes=gte.${ini}&mes=lte.${fim}&order=semana.desc`, { headers: H }),
     ]);
     const t = await tbGet("transferencias", `mes=gte.${ini}&mes=lte.${fim}&order=data.desc`);
-    return { l: a.ok ? await a.json() : [], r: b.ok ? (await b.json()).filter(x=>!x.excluido) : [], t: (t||[]).filter(x=>!x.excluido), falhou: !a.ok || !b.ok };
-  } catch { return { l: [], r: [], t: [], falhou: true }; }
+    return { l: a.ok ? await a.json() : [], r: b.ok ? (await b.json()).filter(x=>!x.excluido) : [], t: (t||[]).filter(x=>!x.excluido) };
+  } catch { return { l: [], r: [], t: [] }; }
 }
 const somaV = a => a.reduce((s,x)=>s+x.valor,0);
 const agCat = list => { const m={}; list.forEach(l=>{m[l.categoria]=(m[l.categoria]||0)+l.valor;}); return Object.entries(m).map(([cat,val])=>({cat,val,cor:CAT_CORES[cat]||"#999"})).sort((a,b)=>b.val-a.val); };
@@ -932,44 +965,56 @@ function Prazo({p, m}) {
   else { txt = `faltam ${p.diasRest} dia${p.diasRest===1?"":"s"}`; if (p.diasRest<=7) { cor="#8A6A1F"; fundo="#FBF3E4"; } }
   return <span style={{display:"inline-flex",alignItems:"center",gap:4,background:fundo,color:cor,borderRadius:20,padding:"3px 9px",fontSize:10.5,fontWeight:800,whiteSpace:"nowrap"}}>⏳ {txt}{!p.mensal&&m.prazo?` · ${f2(m.prazo)}`:""}</span>;
 }
-function CardMeta({m, p, onClick, onQtd, onEtapa}) {
-  const T = TIPOS_META[p.tipo], v = VISOES[m.centro||"empresa"], limite = p.tipo==="limite";
-  const corAnel = limite ? p.status.cor : p.pct>=1 ? "#00875A" : p.status.nivel===2 ? "#B4483C" : p.status.nivel===1 ? "#A6822E" : "#CC0000";
-  const etapas = p.tipo==="etapas" ? lerEtapas(m) : [];
-  const parar = e => e.stopPropagation();
+function MiniCalendario({m, onDia}) {
+  const hj=hoje(), ini=m.data_inicio||(m.criado_em||"").slice(0,10)||hj, fimMeta=m.prazo||hj;
+  const marcados = new Set(lerCheckins(m));
+  const [mesV,setMesV] = useState(hj.slice(0,7)>fimMeta.slice(0,7)?fimMeta.slice(0,7):hj.slice(0,7)<ini.slice(0,7)?ini.slice(0,7):hj.slice(0,7));
+  const [y,mo] = mesV.split("-").map(Number), nDias=new Date(y,mo,0).getDate(), pad=new Date(y,mo-1,1).getDay();
+  const podeAnt = mAdd(mesV,-1)>=ini.slice(0,7), podeProx = mAdd(mesV,1)<=fimMeta.slice(0,7);
+  const cel = [...Array(pad).fill(null), ...Array.from({length:nDias},(_,i)=>`${mesV}-${String(i+1).padStart(2,"0")}`)];
+  const nb = (ok,dir,txt)=><button onClick={()=>ok&&setMesV(mAdd(mesV,dir))} disabled={!ok} style={{background:"none",border:"none",fontSize:16,color:ok?"#1A1A1A":"#DDD",cursor:ok?"pointer":"default",padding:"0 8px"}}>{txt}</button>;
   return (
-    <div onClick={onClick} style={{background:"#fff",borderRadius:16,padding:"16px",boxShadow:"0 2px 10px #1A1A1A12",marginBottom:12,cursor:"pointer"}}>
-      <div style={{display:"flex",alignItems:"flex-start",gap:10,marginBottom:12}}>
-        <span style={{width:38,height:38,borderRadius:12,background:v.fundo,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>{T.icone}</span>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:15,fontWeight:800,color:"#1A1A1A",lineHeight:1.25}}>{m.nome}</div>
-          <div style={{display:"flex",gap:6,alignItems:"center",marginTop:4,flexWrap:"wrap"}}>
-            <span className="badge" style={{marginTop:0,background:v.fundo,color:v.cor,border:`1px solid ${v.cor}33`}}>{v.curto}</span>
-            <span style={{fontSize:10.5,color:"#888888",fontWeight:700}}>{GRUPOS_META[T.grupo].nome} · {T.nome}</span>
-          </div>
-        </div>
-        <span className="badge" style={{marginTop:0,background:p.status.fundo,color:p.status.cor,border:`1px solid ${p.status.cor}33`,whiteSpace:"nowrap"}}>{p.status.txt}</span>
+    <div>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+        {nb(podeAnt,-1,"‹")}<span style={{fontSize:12,fontWeight:800,color:"#1A1A1A"}}>{MESES_NOMES_FULL[mo-1]} {y}</span>{nb(podeProx,1,"›")}
       </div>
-      <div style={{display:"flex",gap:14,alignItems:"center"}}>
-        <Anel pct={p.pct} cor={corAnel} centro={limite?<><div style={{fontSize:17,fontWeight:800,color:"#1A1A1A",lineHeight:1}}>{Math.round(p.pct*100)}%</div><div style={{fontSize:8.5,color:"#888888",fontWeight:700,marginTop:2}}>usado</div></>:null}/>
-        <div style={{flex:1,minWidth:0}}>
-          <div style={{fontSize:10,color:"#888888",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase"}}>{limite?"Gasto":"Atual"}</div>
-          <div style={{fontSize:21,fontWeight:800,color:"#1A1A1A",lineHeight:1.15}}>{fmtMeta(m,p.atual)}</div>
-          <div style={{fontSize:12,fontWeight:700,color:"#888888",marginTop:2}}>{limite?"limite":"alvo"} {fmtMeta(m,p.alvo)}</div>
-          <div style={{marginTop:8}}><Prazo p={p} m={m}/></div>
-        </div>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:3}}>
+        {["D","S","T","Q","Q","S","S"].map((d,i)=><div key={i} style={{fontSize:9,fontWeight:800,color:"#AAAAAA",textAlign:"center"}}>{d}</div>)}
+        {cel.map((d,i)=>{
+          if(!d) return <div key={i}/>;
+          const dentro = d>=ini && d<=fimMeta, passado = d<=hj, ok = marcados.has(d), clicavel = dentro && passado && !!onDia;
+          return (
+            <button key={i} onClick={()=>clicavel&&onDia(m,d)} disabled={!clicavel}
+              style={{aspectRatio:"1",borderRadius:8,border:d===hj?"2px solid #1A1A1A":"1px solid "+(ok?"#00875A":"#EEEEEE"),
+                background:ok?"#00875A":dentro?(passado?"#FAFAFA":"#fff"):"#F5F5F5",color:ok?"#fff":dentro?"#1A1A1A":"#CCCCCC",
+                fontSize:11,fontWeight:800,cursor:clicavel?"pointer":"default",padding:0,fontFamily:"'Inter',sans-serif",opacity:dentro?1:0.5}}>
+              {ok?"✓":parseInt(d.slice(8),10)}
+            </button>
+          );
+        })}
       </div>
-      {p.dica&&<div style={{fontSize:11.5,fontWeight:700,color:p.pct>=1&&!limite?"#00704B":limite&&p.pct>1?"#B4483C":"#444",background:"#F7F7F7",borderRadius:10,padding:"8px 10px",marginTop:12}}>{p.dica}</div>}
-      {p.tipo==="quantidade"&&onQtd&&(
-        <div onClick={parar} style={{display:"flex",gap:8,marginTop:10}}>
+    </div>
+  );
+}
+function BlocoMedidor({m, x, onQtd, onEtapa, onDia}) {
+  const M = MEDIDORES[x.k], cor = x.pct>=1 ? "#00875A" : "#CC0000";
+  return (
+    <div style={{border:"1px solid #EEEEEE",borderRadius:12,padding:"10px 12px",marginTop:10}}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:6}}>
+        <span style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A"}}>{M.icone} {M.nome}</span>
+        <span style={{fontSize:11.5,fontWeight:800,color:x.pct>=1?"#00704B":"#666"}}>{x.txt} · {Math.round(Math.min(1,x.pct)*100)}%</span>
+      </div>
+      <Bar percent={x.pct*100} color={cor}/>
+      {x.k==="quantidade"&&onQtd&&(
+        <div style={{display:"flex",gap:8,marginTop:10}}>
           {[-1,1].map(d=>(
-            <button key={d} onClick={()=>onQtd(m,d)} style={{flex:1,border:`2px solid ${d>0?"#00875A":"#E0E0E0"}`,background:d>0?"#E6F4EE":"#fff",color:d>0?"#00704B":"#666",borderRadius:10,padding:"9px",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>{d>0?"+ 1":"− 1"}</button>
+            <button key={d} onClick={()=>onQtd(m,d)} style={{flex:1,border:`2px solid ${d>0?"#00875A":"#E0E0E0"}`,background:d>0?"#E6F4EE":"#fff",color:d>0?"#00704B":"#666",borderRadius:10,padding:"8px",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>{d>0?"+ 1":"− 1"}</button>
           ))}
         </div>
       )}
-      {etapas.length>0&&(
-        <div onClick={parar} style={{marginTop:10,display:"flex",flexDirection:"column",gap:4}}>
-          {etapas.map((e,i)=>(
+      {x.k==="etapas"&&(
+        <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:4}}>
+          {lerEtapas(m).map((e,i)=>(
             <button key={i} onClick={()=>onEtapa&&onEtapa(m,i)} style={{display:"flex",alignItems:"center",gap:10,background:e.ok?"#E6F4EE":"#FAFAFA",border:`1px solid ${e.ok?"#B5DCCB":"#EEEEEE"}`,borderRadius:10,padding:"8px 10px",cursor:onEtapa?"pointer":"default",textAlign:"left",fontFamily:"'Inter',sans-serif"}}>
               <span style={{width:20,height:20,borderRadius:6,border:`2px solid ${e.ok?"#00875A":"#CCCCCC"}`,background:e.ok?"#00875A":"#fff",color:"#fff",fontSize:12,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{e.ok?"✓":""}</span>
               <span style={{fontSize:13,fontWeight:700,color:e.ok?"#00704B":"#1A1A1A",textDecoration:e.ok?"line-through":"none"}}>{e.t}</span>
@@ -977,6 +1022,61 @@ function CardMeta({m, p, onClick, onQtd, onEtapa}) {
           ))}
         </div>
       )}
+      {x.k==="calendario"&&(
+        <div style={{marginTop:10}}>
+          <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:10}}>
+            <span style={{flex:1,display:"inline-flex",alignItems:"center",gap:6,background:x.seq>0?"#FFF1E6":"#F5F5F5",borderRadius:10,padding:"8px 10px",fontSize:12,fontWeight:800,color:x.seq>0?"#C2410C":"#999"}}>
+              🔥 {x.seq} dia{x.seq===1?"":"s"} seguido{x.seq===1?"":"s"}
+            </span>
+            {onDia&&m.prazo&&hoje()<=m.prazo&&hoje()>=(m.data_inicio||"")&&(
+              <button onClick={()=>onDia(m,hoje())} style={{flex:1,border:"none",borderRadius:10,padding:"9px 10px",fontSize:12.5,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif",
+                background:x.hojeOk?"#E6F4EE":"#00875A",color:x.hojeOk?"#00704B":"#fff"}}>{x.hojeOk?"✓ Hoje feito":"Marcar hoje"}</button>
+            )}
+          </div>
+          <MiniCalendario m={m} onDia={onDia}/>
+        </div>
+      )}
+    </div>
+  );
+}
+function CardMeta({m, p, onClick, onQtd, onEtapa, onDia}) {
+  const T = TIPOS_META[p.tipo], v = VISOES[m.centro||"empresa"], limite = p.tipo==="limite", obj = p.tipo==="objetiva";
+  const corAnel = limite ? p.status.cor : p.pct>=1 ? "#00875A" : p.status.nivel===2 ? "#B4483C" : p.status.nivel===1 ? "#A6822E" : "#CC0000";
+  const meds = p.meds || [];
+  const icone = obj ? (meds.length===1 ? MEDIDORES[meds[0].k].icone : "🎯") : T.icone;
+  const subtitulo = obj ? (meds.length ? meds.map(x=>MEDIDORES[x.k].nome).join(" + ") : "sem medidor") : T.nome;
+  return (
+    <div onClick={onClick} style={{background:"#fff",borderRadius:16,padding:"16px",boxShadow:"0 2px 10px #1A1A1A12",marginBottom:12,cursor:"pointer"}}>
+      <div style={{display:"flex",alignItems:"flex-start",gap:10,marginBottom:12}}>
+        <span style={{width:38,height:38,borderRadius:12,background:v.fundo,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>{icone}</span>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:15,fontWeight:800,color:"#1A1A1A",lineHeight:1.25}}>{m.nome}</div>
+          <div style={{display:"flex",gap:6,alignItems:"center",marginTop:4,flexWrap:"wrap"}}>
+            <span className="badge" style={{marginTop:0,background:v.fundo,color:v.cor,border:`1px solid ${v.cor}33`}}>{v.curto}</span>
+            <span style={{fontSize:10.5,color:"#888888",fontWeight:700}}>{GRUPOS_META[T.grupo].nome} · {subtitulo}</span>
+          </div>
+        </div>
+        <span className="badge" style={{marginTop:0,background:p.status.fundo,color:p.status.cor,border:`1px solid ${p.status.cor}33`,whiteSpace:"nowrap"}}>{p.status.txt}</span>
+      </div>
+      <div style={{display:"flex",gap:14,alignItems:"center"}}>
+        <Anel pct={p.pct} cor={corAnel} centro={limite?<><div style={{fontSize:17,fontWeight:800,color:"#1A1A1A",lineHeight:1}}>{Math.round(p.pct*100)}%</div><div style={{fontSize:8.5,color:"#888888",fontWeight:700,marginTop:2}}>usado</div></>:null}/>
+        <div style={{flex:1,minWidth:0}}>
+          {obj
+            ?<>
+              <div style={{fontSize:10,color:"#888888",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase"}}>Progresso geral</div>
+              <div style={{fontSize:21,fontWeight:800,color:"#1A1A1A",lineHeight:1.15}}>{Math.round(p.pct*100)}%</div>
+              <div style={{fontSize:12,fontWeight:700,color:"#888888",marginTop:2}}>{meds.length>1?`média de ${meds.length} medidores`:meds[0]?meds[0].txt:""}</div>
+            </>
+            :<>
+              <div style={{fontSize:10,color:"#888888",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase"}}>{limite?"Gasto":"Atual"}</div>
+              <div style={{fontSize:21,fontWeight:800,color:"#1A1A1A",lineHeight:1.15}}>{fmtMeta(m,p.atual)}</div>
+              <div style={{fontSize:12,fontWeight:700,color:"#888888",marginTop:2}}>{limite?"limite":"alvo"} {fmtMeta(m,p.alvo)}</div>
+            </>}
+          <div style={{marginTop:8}}><Prazo p={p} m={m}/></div>
+        </div>
+      </div>
+      {p.dica&&<div style={{fontSize:11.5,fontWeight:700,color:p.pct>=1&&!limite?"#00704B":limite&&p.pct>1?"#B4483C":"#444",background:"#F7F7F7",borderRadius:10,padding:"8px 10px",marginTop:12}}>{p.dica}</div>}
+      {obj&&<div onClick={e=>e.stopPropagation()} style={{cursor:"default"}}>{meds.map(x=><BlocoMedidor key={x.k} m={m} x={x} onQtd={onQtd} onEtapa={onEtapa} onDia={onDia}/>)}</div>}
       {!limite&&<div style={{marginTop:12}}><Medalhas pct={p.pct}/></div>}
     </div>
   );
@@ -985,12 +1085,13 @@ function CardRealizada({m, p, onClick}) {
   const T = TIPOS_META[p.tipo], v = VISOES[m.centro||"empresa"];
   const quando = m.concluida_em || null;
   const antes = quando && m.prazo ? diasEntre(quando, m.prazo) : null;
+  const tipoTxt = p.tipo==="objetiva" ? `🎯 ${(p.meds||[]).map(x=>MEDIDORES[x.k].nome).join(" + ")}` : `${T.icone} ${T.nome} · ${fmtMeta(m,p.alvo)}`;
   return (
     <div onClick={onClick} style={{display:"flex",alignItems:"center",gap:12,background:"linear-gradient(135deg,#FFFDF5,#FBF3E4)",border:"1.5px solid #EAD9AE",borderRadius:16,padding:"14px 16px",marginBottom:10,cursor:"pointer"}}>
       <span style={{fontSize:30}}>🏆</span>
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:14.5,fontWeight:800,color:"#1A1A1A"}}>{m.nome}</div>
-        <div style={{fontSize:11,color:"#8A6A1F",fontWeight:700,marginTop:3}}>{T.icone} {T.nome} · {v.curto} · {fmtMeta(m,p.alvo)}</div>
+        <div style={{fontSize:11,color:"#8A6A1F",fontWeight:700,marginTop:3}}>{tipoTxt} · {v.curto}</div>
         <div style={{fontSize:10.5,color:"#888888",fontWeight:600,marginTop:3}}>
           {quando?`Concluída em ${f2(quando)}`:"Alvo atingido"}{antes!=null&&antes>0?` · ${antes} dia${antes>1?"s":""} antes do prazo 🔥`:""}
         </div>
@@ -1024,22 +1125,42 @@ function CardPrevisao({c, p, dias, destaque}) {
 }
 function PainelAlertas({alertas, onClose}) {
   const NIV = [{t:"Info",c:"#2F65AC",f:"#EEF3FB"},{t:"Atenção",c:"#A6822E",f:"#FBF3E4"},{t:"Crítico",c:"#B4483C",f:"#FBECEA"}];
+  const lados = ["empresa","pessoal"].map(c=>({ c, v:VISOES[c], lista:alertas.filter(a=>a.centro===c) }));
   return (
     <Modal onClose={onClose}>
       <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A",marginBottom:2}}>Alertas</div>
-      <div style={{fontSize:11,color:"#888888",marginBottom:14}}>{alertas.length?`${alertas.length} ponto${alertas.length>1?"s":""} para olhar agora`:"Nada fora do esperado agora."}</div>
-      {alertas.length===0&&<div style={{textAlign:"center",padding:"18px 0",fontSize:32}}>✅</div>}
-      {alertas.map((a,i)=>{ const n=NIV[a.nivel]; return (
-        <div key={i} style={{background:n.f,border:`1px solid ${n.c}33`,borderRadius:12,padding:"12px 14px",marginBottom:8}}>
-          <div style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:6}}>
-            <span className="badge" style={{marginTop:1,background:n.c,color:"#fff",border:"none"}}>{n.t}</span>
-            <span style={{fontSize:13,fontWeight:800,color:"#1A1A1A",lineHeight:1.3}}>{a.titulo}</span>
+      <div style={{fontSize:11,color:"#888888",marginBottom:12}}>Sempre mostra a Pico Barbershop e o Isaque, independente do perfil selecionado.</div>
+      <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:8,marginBottom:14}}>
+        {lados.map(({c,v,lista})=>{ const crit=lista.some(a=>a.nivel===2); return (
+          <div key={c} style={{background:v.fundo,border:`1px solid ${v.cor}33`,borderRadius:12,padding:"10px 12px"}}>
+            <div style={{fontSize:11,fontWeight:800,color:v.cor}}>{v.nome}</div>
+            <div style={{fontSize:18,fontWeight:800,color:lista.length?(crit?"#B4483C":"#A6822E"):"#00875A",marginTop:2}}>{lista.length?`${lista.length} alerta${lista.length>1?"s":""}`:"tudo ok ✅"}</div>
           </div>
-          <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Motivo:</b> {a.motivo}</div>
-          <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Impacto:</b> {a.impacto}</div>
-          <div style={{fontSize:11.5,color:n.c,lineHeight:1.45,fontWeight:700,marginTop:2}}>→ {a.acao}</div>
+        );})}
+      </div>
+      {lados.map(({c,v,lista})=>(
+        <div key={c} style={{marginBottom:12}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+            <span style={{width:22,height:22,borderRadius:"50%",background:v.cor,color:"#fff",fontSize:11,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>{v.ini}</span>
+            <span style={{fontSize:13,fontWeight:800,color:"#1A1A1A"}}>{v.nome}</span>
+            <span style={{fontSize:11,color:"#888888",fontWeight:700}}>· {lista.length||"nenhum"} alerta{lista.length===1?"":"s"}</span>
+          </div>
+          {lista.length===0
+            ?<div style={{fontSize:12,color:"#00704B",fontWeight:700,background:"#E6F4EE",borderRadius:10,padding:"10px 12px"}}>Nada pendente para {c==="empresa"?"a":"o"} {v.nome} agora.</div>
+            :lista.map((a,i)=>{ const n=NIV[a.nivel]; return (
+              <div key={i} style={{background:n.f,border:`1px solid ${n.c}33`,borderLeft:`4px solid ${v.cor}`,borderRadius:12,padding:"12px 14px",marginBottom:8}}>
+                <div style={{display:"flex",gap:6,alignItems:"flex-start",marginBottom:6,flexWrap:"wrap"}}>
+                  <span className="badge" style={{marginTop:1,background:n.c,color:"#fff",border:"none"}}>{n.t}</span>
+                  <span className="badge" style={{marginTop:1,background:"#fff",color:v.cor,border:`1px solid ${v.cor}55`}}>{v.curto}</span>
+                  <span style={{fontSize:13,fontWeight:800,color:"#1A1A1A",lineHeight:1.3,flexBasis:"100%"}}>{a.titulo}</span>
+                </div>
+                <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Motivo:</b> {a.motivo}</div>
+                <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Impacto:</b> {a.impacto}</div>
+                <div style={{fontSize:11.5,color:n.c,lineHeight:1.45,fontWeight:700,marginTop:2}}>→ {a.acao}</div>
+              </div>
+            );})}
         </div>
-      );})}
+      ))}
       <button className="btn-ghost" onClick={onClose}>Fechar</button>
     </Modal>
   );
@@ -1055,7 +1176,6 @@ export default function App() {
   const [allReceitas,setAllReceitas]       = useState(INIT_RECEITAS);
   const [loading,setLoading]               = useState(true);
   const [lastSync,setLastSync]             = useState(null);
-  const [offline,setOffline]               = useState(false);
   const [,forceCatUpdate]                  = useState(0);
   const [view,setView]                     = useState("caixa");
   const [visao,setVisaoSt]                 = useState(lerVisao);
@@ -1125,9 +1245,9 @@ export default function App() {
       tbGet("transferencias", "order=data.desc"),
       tbGet("metas", "order=criado_em.asc"),
     ]);
-    if (!g.falhou) setGlob({ l:g.l, r:g.r, t:(tRaw||[]).filter(x=>!x.excluido) });
-    if (tRaw) setTransfRaw(tRaw);
-    if (mt) setMetas(mt.filter(x=>!x.excluido));
+    setTransfRaw(tRaw||[]);
+    setGlob({ l:g.l, r:g.r, t:(tRaw||[]).filter(x=>!x.excluido) });
+    setMetas((mt||[]).filter(x=>!x.excluido));
   }, []);
   const load = useCallback(async (silent=false) => {
     if (!silent) setLoading(true);
@@ -1136,10 +1256,9 @@ export default function App() {
       mesAnt ? sbGet(mesAnt.mes) : Promise.resolve([]),
       rcGet(mesAtual.mes),
     ]);
-    setAllItems(p => ({...p, ...(dAtual ? {[mesAtual.mes]: dAtual} : {}), ...(mesAnt && dAnt ? {[mesAnt.mes]: dAnt} : {})}));
-    if (rAtual) setAllReceitas(p => ({...p, [mesAtual.mes]: rAtual}));
-    setOffline(!dAtual || !rAtual);
-    if (dAtual && rAtual) setLastSync(new Date());
+    setAllItems(p => ({...p, [mesAtual.mes]: (dAtual||[]), ...(mesAnt ? {[mesAnt.mes]: (dAnt||[])} : {})}));
+    setAllReceitas(p => ({...p, [mesAtual.mes]: rAtual||[]}));
+    setLastSync(new Date());
     if (!silent) { setLoading(false); loadGlobal(); }
   }, [mesAtual.mes, mesAnt, loadGlobal]);
 
@@ -1176,7 +1295,7 @@ export default function App() {
     const d = c => contaveis.filter(x=>centroDe(x)===c).reduce((s,x)=>s+x.valor,0);
     return { empresa: r("empresa")-d("empresa")-totalTransf, pessoal: r("pessoal")-d("pessoal")+totalTransf };
   },[receitas,contaveis,totalTransf]);
-  const alertas   = useMemo(()=>gerarAlertas(glob, metas, visao),[glob,metas,visao]);
+  const alertas   = useMemo(()=>gerarAlertas(glob, metas),[glob,metas]);   // sempre Pico Barbershop + Isaque
   const nivelAlerta = alertas.reduce((m,a)=>Math.max(m,a.nivel),0);
   const prevs     = useMemo(()=>(visao==="ambos"?["empresa","pessoal","ambos"]:[visao]).map(c=>({c, p:previsao(glob,c,prevDias)})),[glob,visao,prevDias]);
   // Corte do comparativo: mês corrente = até hoje; mês passado = mês inteiro; mês futuro = sem comparativo
@@ -1352,39 +1471,49 @@ export default function App() {
   const executarTransf = async t => { if(await tbPatch("transferencias", t.id, { data:hoje(), mes:hoje().slice(0,7) })){ load(); showToast("✓ Movido para executado"); } };
 
   // ─── Metas ───
-  const baseMeta = grupo => ({ grupo, tipo: grupo==="financeira"?"faturamento":"quantidade", nome:"", descricao:"", centro:centroPadrao, categoria:"", unidade:"",
-    iniDigits:"", alvoDigits:"", atualDigits:"", alvoQtd:"", atualQtd:"", etapas:[], novaEtapa:"", data_inicio:hoje(), prazo:"" });
+  const baseMeta = grupo => ({ grupo, tipo: grupo==="financeira"?"faturamento":"objetiva", medidores: grupo==="objetiva"?["quantidade"]:[],
+    nome:"", descricao:"", centro:centroPadrao, categoria:"", unidade:"",
+    iniDigits:"", alvoDigits:"", atualDigits:"", alvoQtd:"", atualQtd:"", etapas:[], novaEtapa:"", cal_freq:"diario", cal_vezes:"3", data_inicio:hoje(), prazo:"" });
   const novaMeta = grupo => { setErroGen({}); setFormMeta({ f: baseMeta(grupo) }); };
   const editarMeta = m => {
-    const t=tipoMeta(m.tipo), g=TIPOS_META[t].grupo, n=x=>Number(x)||0;
+    const t=tipoMeta(m.tipo), g=TIPOS_META[t].grupo, n=x=>Number(x)||0, md=medidoresDe(m);
     setErroGen({}); setMetaTab("nova");
-    setFormMeta({ item:m, f:{ ...baseMeta(g), tipo:t, nome:m.nome||"", descricao:m.descricao||"", centro:m.centro||"empresa", categoria:m.categoria||"", unidade:m.unidade||"",
+    setFormMeta({ item:m, f:{ ...baseMeta(g), tipo:t, medidores: g==="objetiva"?(md.length?md:["quantidade"]):[], nome:m.nome||"", descricao:m.descricao||"", centro:m.centro||"empresa", categoria:m.categoria||"", unidade:m.unidade||"",
       iniDigits:n(m.valor_inicial)?float2d(n(m.valor_inicial)):"", alvoDigits:g==="financeira"&&n(m.valor_alvo)?float2d(n(m.valor_alvo)):"", atualDigits:t==="valor"&&n(m.valor_atual)?float2d(n(m.valor_atual)):"",
-      alvoQtd:t==="quantidade"?String(n(m.valor_alvo)):"", atualQtd:t==="quantidade"?String(n(m.valor_atual)):"", etapas:lerEtapas(m), data_inicio:m.data_inicio||hoje(), prazo:m.prazo||"" } });
+      alvoQtd:md.includes("quantidade")?String(n(m.valor_alvo)):"", atualQtd:md.includes("quantidade")?String(n(m.valor_atual)):"", etapas:lerEtapas(m),
+      cal_freq:m.cal_freq||"diario", cal_vezes:String(m.cal_vezes||3), data_inicio:m.data_inicio||hoje(), prazo:m.prazo||"" } });
   };
   const salvarMeta = async () => {
-    const f=formMeta.f, T=TIPOS_META[f.tipo], e={};
+    const f=formMeta.f, T=TIPOS_META[f.tipo], e={}, obj=f.tipo==="objetiva", md=obj?f.medidores:[];
     if(!f.nome.trim()) e.nome="Dê um nome para a meta";
     if(T.grupo==="financeira" && (!f.alvoDigits||parseInt(f.alvoDigits)===0)) e.alvo="Informe o valor";
-    if(f.tipo==="quantidade" && !(parseInt(f.alvoQtd)>0)) e.alvoQtd="Informe a quantidade-alvo";
-    if(f.tipo==="etapas" && f.etapas.length===0) e.etapas="Adicione pelo menos uma etapa";
+    if(obj && md.length===0) e.medidores="Escolha pelo menos um medidor";
+    if(md.includes("quantidade") && !(parseInt(f.alvoQtd)>0)) e.alvoQtd="Informe a quantidade-alvo";
+    if(md.includes("etapas") && f.etapas.length===0) e.etapas="Adicione pelo menos uma etapa";
+    if(md.includes("calendario") && f.cal_freq==="semana" && !(parseInt(f.cal_vezes)>=1&&parseInt(f.cal_vezes)<=7)) e.cal_vezes="De 1 a 7 vezes";
     if(!T.mensal && !f.prazo) e.prazo="Defina um prazo";
-    if(f.tipo==="acumular" && !f.data_inicio) e.data_inicio="Informe o início";
+    if((f.tipo==="acumular"||md.includes("calendario")) && !f.data_inicio) e.data_inicio="Informe o início";
     if(f.prazo && f.data_inicio && f.prazo<f.data_inicio) e.prazo="O prazo deve ser depois do início";
     if(Object.keys(e).length){ setErroGen(e); return; }
-    const alvo = T.grupo==="financeira" ? d2float(f.alvoDigits) : f.tipo==="quantidade" ? parseInt(f.alvoQtd,10) : f.etapas.length;
-    const atual = f.tipo==="valor" ? d2float(f.atualDigits) : f.tipo==="quantidade" ? (parseInt(f.atualQtd,10)||0) : 0;
-    const body = { nome:f.nome.trim(), descricao:f.descricao.trim(), grupo:T.grupo, tipo:f.tipo, centro:f.centro,
-      categoria: f.tipo==="limite"&&f.categoria ? f.categoria : null, unidade: f.tipo==="quantidade" ? f.unidade.trim() : null,
-      valor_inicial: f.tipo==="acumular" ? d2float(f.iniDigits) : 0, valor_alvo: alvo, valor_atual: atual,
-      etapas: f.tipo==="etapas" ? f.etapas.map(x=>({t:x.t,ok:!!x.ok})) : null,
-      data_inicio: T.mensal ? null : (f.data_inicio||null), prazo: T.mensal ? null : (f.prazo||null) };
     const ed = formMeta.item;
-    if (!T.auto && alvo>0 && (f.tipo==="etapas" ? f.etapas.every(x=>x.ok) : atual>=alvo) && !(ed&&ed.concluida_em)) body.concluida_em = hoje();
+    const qtdAlvo = md.includes("quantidade") ? parseInt(f.alvoQtd,10) : 0, qtdAtual = md.includes("quantidade") ? (parseInt(f.atualQtd,10)||0) : 0;
+    const body = { nome:f.nome.trim(), descricao:f.descricao.trim(), grupo:T.grupo, tipo:f.tipo, centro:f.centro,
+      categoria: f.tipo==="limite"&&f.categoria ? f.categoria : null, unidade: md.includes("quantidade") ? f.unidade.trim() : null,
+      valor_inicial: f.tipo==="acumular" ? d2float(f.iniDigits) : 0,
+      valor_alvo: T.grupo==="financeira" ? d2float(f.alvoDigits) : qtdAlvo,
+      valor_atual: f.tipo==="valor" ? d2float(f.atualDigits) : qtdAtual,
+      medidores: obj ? md : null,
+      etapas: md.includes("etapas") ? f.etapas.map(x=>({t:x.t,ok:!!x.ok})) : null,
+      cal_freq: md.includes("calendario") ? f.cal_freq : null, cal_vezes: md.includes("calendario")&&f.cal_freq==="semana" ? parseInt(f.cal_vezes,10) : null,
+      data_inicio: T.mensal ? null : (f.data_inicio||null), prazo: T.mensal ? null : (f.prazo||null) };
+    if (!ed && md.includes("calendario")) body.checkins = [];
+    // Já salva como realizada se tudo estiver em 100%
+    const prov = progMeta({ ...(ed||{}), ...body, checkins: ed ? ed.checkins : [], criado_em: ed?.criado_em || new Date().toISOString() }, glob);
+    if (!T.auto && prov.pct>=1 && !(ed&&ed.concluida_em)) body.concluida_em = hoje();
     const ok = ed ? await tbPatch("metas", ed.id, body)
-                  : !!(await tbPost("metas", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"", concluida_em:null, criado_em:new Date().toISOString() }));
+                  : !!(await tbPost("metas", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"", concluida_em: body.concluida_em||null, criado_em:new Date().toISOString() }));
     if(ok){ setFormMeta(null); setMetaTab("andamento"); loadGlobal(); showToast(ed?"✓ Meta atualizada":"🎯 Meta criada — bora!"); }
-    else showToast("⚠ Não salvou — falta criar a tabela no Supabase");
+    else showToast("⚠ Não salvou — rode o SQL de atualização das metas");
   };
   // Atualização rápida no próprio cartão (otimista: muda na tela e grava em seguida)
   const patchMetaLocal = async (m, body, msgFeita) => {
@@ -1400,6 +1529,8 @@ export default function App() {
     } else if (msgFeita) showToast(msgFeita);
   };
   const ajustarQtd = (m, d) => { const v = Math.max(0, (Number(m.valor_atual)||0) + d); patchMetaLocal(m, { valor_atual: v }); };
+  const alternarDia = (m, d) => { const l=lerCheckins(m), tem=l.includes(d), nova = tem ? l.filter(x=>x!==d) : [...l, d].sort();
+    patchMetaLocal(m, { checkins: nova }, tem ? null : (d===hoje() ? `🔥 Dia marcado! ${sequencia([...nova].filter(x=>x<=hoje()))} seguido(s)` : "✓ Dia marcado")); };
   const alternarEtapa = (m, i) => { const e = lerEtapas(m).map((x,k)=> k===i ? { ...x, ok:!x.ok } : x); patchMetaLocal(m, { etapas: e }, e[i].ok ? "✓ Etapa concluída" : null); };
   const concluirMeta = async m => { if(await tbPatch("metas", m.id, { concluida_em: hoje() })){ loadGlobal(); setMetaTab("realizadas"); showToast("🏆 Meta realizada! Parabéns!"); } };
   const reabrirMeta  = async m => { if(await tbPatch("metas", m.id, { concluida_em: null })){ loadGlobal(); setMetaTab("andamento"); showToast("Meta reaberta"); } };
@@ -1520,11 +1651,10 @@ export default function App() {
             <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A",lineHeight:1.1,fontFamily:"'Inter',sans-serif"}}>Pico Barber Shop</div>
             <div style={{display:"flex",alignItems:"center",gap:6,flexWrap:"wrap"}}>
               <span style={{fontSize:11,color:"#888888",letterSpacing:"0.12em",textTransform:"uppercase",fontWeight:600}}>Olá, Isaque</span>
-              <span title="Versão do app no ar" style={{fontSize:9,color:"#AAAAAA",fontWeight:600}}>{APP_VERSAO}</span>
               {lastSync && (
-                <span style={{display:"inline-flex",alignItems:"center",gap:4,background:offline?"#FBECEA":"#E6F4EE",border:`1px solid ${offline?"#CC000033":"#00875A33"}`,borderRadius:16,padding:"2px 8px",fontSize:9,color:offline?"#CC0000":"#00875A",fontWeight:700,letterSpacing:"0.04em"}}>
-                  <span style={{width:5,height:5,background:offline?"#CC0000":"#00875A",borderRadius:"50%"}}/>
-                  {offline ? "Sem conexão" : loading ? "Sync" : "Online"}
+                <span style={{display:"inline-flex",alignItems:"center",gap:4,background:"#E6F4EE",border:"1px solid #00875A33",borderRadius:16,padding:"2px 8px",fontSize:9,color:"#00875A",fontWeight:700,letterSpacing:"0.04em"}}>
+                  <span style={{width:5,height:5,background:"#00875A",borderRadius:"50%"}}/>
+                  {loading ? "Sync" : "Online"}
                 </span>
               )}
             </div>
@@ -1597,12 +1727,18 @@ export default function App() {
       </div>
 
       <div style={{padding:"20px 16px 120px"}}>
-        {(()=>{ const a=alertas.find(x=>x.hoje); return a&&(
+        {(()=>{ const hs=alertas.filter(x=>x.hoje); if(!hs.length) return null;
+          const n=hs.reduce((t,a)=>t+parseInt(a.titulo,10),0), tot=hs.reduce((t,a)=>t+a.total,0);
+          return (
           <div role="button" onClick={()=>setShowAlertas(true)} style={{display:"flex",alignItems:"center",gap:10,background:"#FBECEA",border:"1.5px solid #B4483C",borderRadius:12,padding:"11px 14px",marginBottom:14,cursor:"pointer"}}>
             <span style={{fontSize:18}}>⏰</span>
             <div style={{flex:1,minWidth:0}}>
-              <div style={{fontSize:13,fontWeight:800,color:"#8A3A30"}}>{a.titulo} · {a.impacto.replace(" vencendo hoje","")}</div>
-              <div style={{fontSize:11,color:"#8A3A30",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.motivo}</div>
+              <div style={{fontSize:13,fontWeight:800,color:"#8A3A30"}}>{n} conta{n>1?"s":""} para pagar hoje · {fmt(tot)}</div>
+              {hs.map(a=>(
+                <div key={a.centro} style={{fontSize:11,color:"#8A3A30",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                  <b style={{color:VISOES[a.centro].cor}}>{VISOES[a.centro].nome}:</b> {a.motivo}
+                </div>
+              ))}
             </div>
             <span style={{color:"#8A3A30",fontSize:16}}>›</span>
           </div>
@@ -1891,7 +2027,7 @@ export default function App() {
                   <div style={{color:"#888888",fontSize:12,marginTop:4,marginBottom:14}}>Crie uma meta financeira ou objetiva e acompanhe o avanço aqui.</div>
                   <button onClick={()=>{setFormMeta(null);setMetaTab("nova");}} style={{background:"#CC0000",color:"#fff",border:"none",borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>+ Nova meta</button>
                 </div>
-                :<div className="metas-grid">{andamento.map(({m,p})=><CardMeta key={m.id} m={m} p={p} onClick={()=>setAcaoGen({kind:"meta",item:m})} onQtd={ajustarQtd} onEtapa={alternarEtapa}/>)}</div>}
+                :<div className="metas-grid">{andamento.map(({m,p})=><CardMeta key={m.id} m={m} p={p} onClick={()=>setAcaoGen({kind:"meta",item:m})} onQtd={ajustarQtd} onEtapa={alternarEtapa} onDia={alternarDia}/>)}</div>}
             </>}
 
             {metaTab==="realizadas"&&(realizadas.length===0
@@ -1919,11 +2055,15 @@ export default function App() {
                 const f=formMeta.f, T=TIPOS_META[f.tipo], ed=formMeta.item;
                 const up=(k,v)=>{ setFormMeta(x=>({...x,f:{...x.f,[k]:v}})); setErroGen(e=>({...e,[k.replace("Digits","")]:null,[k]:null})); };
                 const addEtapa=()=>{ const t=f.novaEtapa.trim(); if(!t) return; setFormMeta(x=>({...x,f:{...x.f,etapas:[...x.f.etapas,{t,ok:false}],novaEtapa:""}})); setErroGen(e=>({...e,etapas:null})); };
-                const tiposDoGrupo = Object.entries(TIPOS_META).filter(([,t])=>t.grupo===f.grupo);
-                const previa = (()=>{ const mt={ id:"previa", nome:f.nome||"Nome da meta", tipo:f.tipo, centro:f.centro, categoria:f.categoria||null, unidade:f.unidade,
-                  valor_inicial:d2float(f.iniDigits), valor_alvo: T.grupo==="financeira"?d2float(f.alvoDigits):f.tipo==="quantidade"?(parseInt(f.alvoQtd)||0):f.etapas.length,
-                  valor_atual: f.tipo==="valor"?d2float(f.atualDigits):(parseInt(f.atualQtd)||0), etapas:f.etapas, data_inicio:f.data_inicio, prazo:f.prazo, criado_em:hoje() };
+                const tiposDoGrupo = Object.entries(TIPOS_META).filter(([,t])=>t.grupo==="financeira");
+                const obj = f.tipo==="objetiva", md = obj ? f.medidores : [];
+                const alternarMedidor = k => { setFormMeta(x=>{ const l=x.f.medidores; return {...x,f:{...x.f,medidores: l.includes(k)?l.filter(y=>y!==k):[...l,k]}}; }); setErroGen(e=>({...e,medidores:null})); };
+                const previa = (()=>{ const mt={ id:"previa", nome:f.nome||"Nome da meta", tipo:f.tipo, centro:f.centro, categoria:f.categoria||null, unidade:f.unidade, medidores:md,
+                  valor_inicial:d2float(f.iniDigits), valor_alvo: T.grupo==="financeira"?d2float(f.alvoDigits):(parseInt(f.alvoQtd)||0),
+                  valor_atual: f.tipo==="valor"?d2float(f.atualDigits):(parseInt(f.atualQtd)||0), etapas:f.etapas, checkins: ed ? ed.checkins : [],
+                  cal_freq:f.cal_freq, cal_vezes:parseInt(f.cal_vezes)||1, data_inicio:f.data_inicio, prazo:f.prazo, criado_em:hoje() };
                   return { mt, p: progMeta(mt, glob) }; })();
+                const diasCal = f.prazo&&f.data_inicio&&f.prazo>=f.data_inicio ? alvoCalendario({data_inicio:f.data_inicio,prazo:f.prazo,cal_freq:f.cal_freq,cal_vezes:parseInt(f.cal_vezes)||1}) : 0;
                 const Sec=({n,t})=><div style={{fontSize:11,color:"#888888",letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:800,margin:"18px 0 10px"}}>{n}. {t}</div>;
                 return (
                   <div className="meta-form">
@@ -1932,27 +2072,46 @@ export default function App() {
                         <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A"}}>{ed?"Editar meta":`Nova meta ${GRUPOS_META[f.grupo].nome.toLowerCase()}`} {GRUPOS_META[f.grupo].icone}</div>
                         {!ed&&<button onClick={()=>setFormMeta(null)} style={{background:"none",border:"none",color:"#CC0000",fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>trocar tipo</button>}
                       </div>
-                      <Sec n={1} t={f.grupo==="financeira"?"O que medir":"Como medir"}/>
-                      <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8}}>
-                        {tiposDoGrupo.map(([k,t])=>(
-                          <button key={k} onClick={()=>up("tipo",k)} style={{textAlign:"left",background:f.tipo===k?"#1A1A1A":"#fff",color:f.tipo===k?"#fff":"#1A1A1A",border:`2px solid ${f.tipo===k?"#1A1A1A":"#EEEEEE"}`,borderRadius:12,padding:"10px 12px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
-                            <div style={{fontSize:13,fontWeight:800}}>{t.icone} {t.nome}</div>
-                          </button>
-                        ))}
-                      </div>
-                      <div style={{fontSize:11.5,color:"#666666",fontWeight:600,marginTop:8,lineHeight:1.45}}>{T.desc}{T.auto?" Calculada sozinha pelos lançamentos.":""}</div>
+                      <Sec n={1} t={obj?"Como medir · pode escolher mais de um":"O que medir"}/>
+                      {obj
+                        ?<>
+                          <div style={{display:"flex",flexDirection:"column",gap:8}}>
+                            {Object.entries(MEDIDORES).map(([k,M])=>{ const on=md.includes(k); return (
+                              <button key={k} onClick={()=>alternarMedidor(k)} style={{display:"flex",alignItems:"center",gap:12,textAlign:"left",background:on?"#1A1A1A":"#fff",color:on?"#fff":"#1A1A1A",border:`2px solid ${on?"#1A1A1A":"#EEEEEE"}`,borderRadius:12,padding:"10px 12px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
+                                <span style={{width:22,height:22,borderRadius:6,border:`2px solid ${on?"#fff":"#CCCCCC"}`,background:on?"#CC0000":"#fff",color:"#fff",fontSize:13,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{on?"✓":""}</span>
+                                <span style={{flex:1}}>
+                                  <span style={{display:"block",fontSize:13.5,fontWeight:800}}>{M.icone} {M.nome}</span>
+                                  <span style={{display:"block",fontSize:11,fontWeight:600,opacity:0.75,marginTop:2}}>{M.desc}</span>
+                                </span>
+                              </button>
+                            );})}
+                          </div>
+                          <ErrTxt msg={erroGen.medidores}/>
+                          {md.length>1&&<div style={{fontSize:11.5,color:"#666666",fontWeight:600,marginTop:8}}>O progresso geral é a média dos {md.length} medidores.</div>}
+                        </>
+                        :<>
+                          <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8}}>
+                            {tiposDoGrupo.map(([k,t])=>(
+                              <button key={k} onClick={()=>up("tipo",k)} style={{textAlign:"left",background:f.tipo===k?"#1A1A1A":"#fff",color:f.tipo===k?"#fff":"#1A1A1A",border:`2px solid ${f.tipo===k?"#1A1A1A":"#EEEEEE"}`,borderRadius:12,padding:"10px 12px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
+                                <div style={{fontSize:13,fontWeight:800}}>{t.icone} {t.nome}</div>
+                              </button>
+                            ))}
+                          </div>
+                          <div style={{fontSize:11.5,color:"#666666",fontWeight:600,marginTop:8,lineHeight:1.45}}>{T.desc}{T.auto?" Calculada sozinha pelos lançamentos.":""}</div>
+                        </>}
 
                       <Sec n={2} t="Identificação"/>
                       <div style={{marginBottom:14}}>
                         <label style={FL}>Nome da meta *</label>
                         <input style={INP(erroGen.nome)} value={f.nome} onChange={e=>up("nome",e.target.value)}
-                          placeholder={{faturamento:"Ex: Faturar R$ 40 mil",acumular:"Ex: Reserva de emergência",limite:"Ex: Produtos até R$ 1.500",valor:"Ex: Juntar para a reforma",quantidade:"Ex: 100 assinantes ativos",etapas:"Ex: Concluir a reforma da fachada"}[f.tipo]}/>
+                          placeholder={{faturamento:"Ex: Faturar R$ 40 mil",acumular:"Ex: Reserva de emergência",limite:"Ex: Produtos até R$ 1.500",valor:"Ex: Juntar para a reforma",objetiva:"Ex: Postar no Instagram todo dia"}[f.tipo]}/>
                         <ErrTxt msg={erroGen.nome}/>
                       </div>
                       <label style={FL}>De quem é a meta</label>
                       <SeletorCentro valor={f.centro} onChange={v=>up("centro",v)}/>
 
-                      <Sec n={3} t={f.tipo==="etapas"?"Etapas":"Alvo"}/>
+                      <Sec n={3} t={obj?"Detalhes de cada medidor":"Alvo"}/>
+                      {obj&&md.length===0&&<div style={{fontSize:12,color:"#888888",fontWeight:600,marginBottom:14}}>Escolha um medidor no passo 1.</div>}
                       {f.tipo==="limite"&&(
                         <div style={{marginBottom:14}}>
                           <label style={FL}>Categoria</label>
@@ -1965,7 +2124,8 @@ export default function App() {
                       {T.grupo==="financeira"&&<CampoValor label={f.tipo==="faturamento"?"Faturamento desejado no mês *":f.tipo==="limite"?"Limite de gasto no mês *":"Valor-alvo *"} digits={f.alvoDigits} onChange={v=>up("alvoDigits",v)} err={erroGen.alvo}/>}
                       {f.tipo==="acumular"&&<CampoValor label="Já guardado antes do início" digits={f.iniDigits} onChange={v=>up("iniDigits",v)}/>}
                       {f.tipo==="valor"&&<CampoValor label="Quanto já tem hoje" digits={f.atualDigits} onChange={v=>up("atualDigits",v)} cor="#00704B"/>}
-                      {f.tipo==="quantidade"&&(
+                      {md.includes("quantidade")&&<div style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",marginBottom:8}}>🔢 Quantidade</div>}
+                      {md.includes("quantidade")&&(
                         <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr)",gap:8,marginBottom:14}}>
                           <div><label style={FL}>Alvo *</label><input inputMode="numeric" style={INP(erroGen.alvoQtd)} placeholder="100" value={f.alvoQtd} onChange={e=>up("alvoQtd",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>
                           <div><label style={FL}>Atual</label><input inputMode="numeric" style={INP(false)} placeholder="0" value={f.atualQtd} onChange={e=>up("atualQtd",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>
@@ -1973,7 +2133,8 @@ export default function App() {
                           <div style={{gridColumn:"1 / -1"}}><ErrTxt msg={erroGen.alvoQtd}/></div>
                         </div>
                       )}
-                      {f.tipo==="etapas"&&(
+                      {md.includes("etapas")&&<div style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",marginBottom:8}}>✅ Etapas</div>}
+                      {md.includes("etapas")&&(
                         <div style={{marginBottom:14}}>
                           {f.etapas.map((e,i)=>(
                             <div key={i} style={{display:"flex",alignItems:"center",gap:8,background:"#FAFAFA",border:"1px solid #EEEEEE",borderRadius:10,padding:"8px 10px",marginBottom:6}}>
@@ -1991,11 +2152,29 @@ export default function App() {
                         </div>
                       )}
 
+                      {md.includes("calendario")&&(
+                        <div style={{marginBottom:14}}>
+                          <div style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",marginBottom:8}}>📅 Calendário</div>
+                          <label style={FL}>Frequência</label>
+                          <Chips opcoes={[["diario","Todos os dias"],["semana","Algumas vezes por semana"]]} valor={f.cal_freq} onChange={v=>up("cal_freq",v)}/>
+                          {f.cal_freq==="semana"&&(
+                            <div style={{display:"flex",alignItems:"center",gap:10,margin:"-6px 0 10px"}}>
+                              <input inputMode="numeric" style={{...INP(erroGen.cal_vezes),width:80,textAlign:"center",fontWeight:800}} value={f.cal_vezes} onChange={e=>up("cal_vezes",e.target.value.replace(/\D/g,"").slice(0,1))}/>
+                              <span style={{fontSize:13,fontWeight:700,color:"#444"}}>vezes por semana</span>
+                            </div>
+                          )}
+                          <ErrTxt msg={erroGen.cal_vezes}/>
+                          <div style={{fontSize:11.5,color:"#00704B",fontWeight:700,background:"#E6F4EE",borderRadius:10,padding:"9px 12px"}}>
+                            {diasCal>0 ? `Meta: marcar ${diasCal} dia${diasCal>1?"s":""} entre ${fmtDate(f.data_inicio)} e ${fmtDate(f.prazo)}. Cada dia marcado avança a meta e conta para a sequência 🔥.` : "Defina o início e o prazo abaixo para calcular quantos dias marcar."}
+                          </div>
+                        </div>
+                      )}
+
                       <Sec n={4} t="Prazo"/>
                       {T.mensal
                         ?<div style={{fontSize:12,color:"#666666",fontWeight:600,background:"#F5F5F5",borderRadius:10,padding:"10px 12px"}}>🔁 Meta mensal: começa no dia 1 e renova todo mês sozinha.</div>
                         :<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10}}>
-                          <div><label style={FL}>Início{f.tipo==="acumular"?" *":""}</label><input type="date" style={INP(erroGen.data_inicio)} value={f.data_inicio} onChange={e=>up("data_inicio",e.target.value)}/><ErrTxt msg={erroGen.data_inicio}/></div>
+                          <div><label style={FL}>Início{f.tipo==="acumular"||md.includes("calendario")?" *":""}</label><input type="date" style={INP(erroGen.data_inicio)} value={f.data_inicio} onChange={e=>up("data_inicio",e.target.value)}/><ErrTxt msg={erroGen.data_inicio}/></div>
                           <div><label style={FL}>Prazo *</label><input type="date" style={INP(erroGen.prazo)} min={f.data_inicio||undefined} value={f.prazo} onChange={e=>up("prazo",e.target.value)}/><ErrTxt msg={erroGen.prazo}/></div>
                         </div>}
 
@@ -2294,7 +2473,7 @@ export default function App() {
               {kind==="meta" ? `${fmtMeta(item,p.atual)} de ${fmtMeta(item,p.alvo)} · ${(p.pct*100).toFixed(0)}% · ${p.status.txt}` : `${fmt(item.valor)} · ${fmtDate(item.data)} · Pico → Isaque`}
             </div>
             {kind==="meta"&&item.descricao&&<div style={{fontSize:12,color:"#444",background:"#F5F5F5",borderRadius:10,padding:"10px 12px",marginBottom:12,lineHeight:1.45}}>{item.descricao}</div>}
-            <button className="btn-primary" style={{background:"#1A1A1A"}} onClick={()=>{fecha(); kind==="meta"?editarMeta(item):editarTransf(item);}}>{kind==="meta"&&["valor","manual","quantidade"].includes(item.tipo)?"Atualizar progresso / editar":"Editar"}</button>
+            <button className="btn-primary" style={{background:"#1A1A1A"}} onClick={()=>{fecha(); kind==="meta"?editarMeta(item):editarTransf(item);}}>{kind==="meta"&&["valor","manual"].includes(item.tipo)?"Atualizar progresso / editar":"Editar"}</button>
             {kind==="meta"&&!p.realizada&&!p.mensal&&<button className="btn-success" style={{marginTop:10}} onClick={()=>{fecha();concluirMeta(item);}}>🏆 Marcar como realizada</button>}
             {kind==="meta"&&item.concluida_em&&<button className="btn-ghost" onClick={()=>{fecha();reabrirMeta(item);}}>Reabrir meta</button>}
             {kind==="transf"&&item.data>hoje()&&<button className="btn-success" style={{marginTop:10}} onClick={()=>{fecha();executarTransf(item);}}>Mover para executado</button>}
