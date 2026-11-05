@@ -3,7 +3,8 @@ import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 // ─── SUPABASE ─────────────────────────────────────────────────────────────────
 const SUPA_URL = "https://oltwaosdzgvbbvermilk.supabase.co";
 const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9sdHdhb3Nkemd2YmJ2ZXJtaWxrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1NDU3MjksImV4cCI6MjA5NDEyMTcyOX0.WbDR65w6eywTgLc4Lwii_63RrJwKPN9oj1DsgjxeFBo";
-const CID = "pico";
+// Cliente padrão "pico". Para testar sem mexer nos dados reais, abra o link com ?cliente=pico-teste
+const CID = (() => { try { return new URLSearchParams(window.location.search).get("cliente") || "pico"; } catch { return "pico"; } })();
 const H = {
   "Content-Type": "application/json",
   "apikey": SUPA_KEY,
@@ -52,6 +53,16 @@ async function rcDelete(id) {
     return r.ok;
   } catch { return false; }
 }
+// Receita com centro (PJ/PF). Se a coluna "centro" ainda não existir no banco, grava sem ela (vira PJ).
+const semCentro = ({centro, ...resto}) => resto;
+async function rcPostC(body) { return (await rcPost(body)) ?? rcPost(semCentro(body)); }
+async function rcPatchC(id, body) { return (await rcPatch(id, body)) || rcPatch(id, semCentro(body)); }
+// Exclusão de receita: marca excluido=true + motivo (não apaga a linha).
+// Se as colunas ainda não existirem no banco, cai no DELETE antigo para não travar o app.
+async function rcExcluir(id, motivo) {
+  const ok = await rcPatch(id, { excluido: true, motivo_exclusao: motivo });
+  return ok ? true : rcDelete(id);
+}
 async function fetchCategorias() {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/categorias?cliente_id=eq.${CID}&order=nome.asc`, { headers: H });
@@ -60,14 +71,178 @@ async function fetchCategorias() {
 }
 const uid = () => (crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2) + Date.now());
 
+// ─── TABELAS NOVAS (transferencias, metas) + categorias ─────────────────────
+// Se uma tabela ainda não existir no banco, a busca volta vazia e o resto do app segue normal.
+async function tbGet(tabela, q="") {
+  try {
+    const r = await fetch(`${SUPA_URL}/rest/v1/${tabela}?cliente_id=eq.${CID}${q?"&"+q:""}`, { headers: H });
+    return r.ok ? r.json() : [];
+  } catch { return []; }
+}
+async function tbPost(tabela, body) {
+  try {
+    const r = await fetch(`${SUPA_URL}/rest/v1/${tabela}`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    return r.ok ? r.json() : null;
+  } catch { return null; }
+}
+async function tbPatch(tabela, id, body) {
+  try {
+    const r = await fetch(`${SUPA_URL}/rest/v1/${tabela}?id=eq.${id}`, { method: "PATCH", headers: { ...H, "Prefer": "return=minimal" }, body: JSON.stringify(body) });
+    return r.ok;
+  } catch { return false; }
+}
+
 // Fallback mínimo — só usado se a busca de categorias falhar ou vier vazia
-// (você cadastra as categorias reais pelo Painel do Mentor)
 let CATEGORIAS = ["Outros"];
-let CAT_CENTRO = {};   // nome -> "empresa" | "pessoal" (vem da tabela categorias)
-const catsDoCentro = c => CATEGORIAS.filter(n=>!CAT_CENTRO[n]||CAT_CENTRO[n]===c||CAT_CENTRO[n]==="ambos");
+let CAT_CENTRO = {};   // nome -> lista de centros onde a categoria existe (null = aparece nos dois)
+let CAT_ROWS = [];     // linhas completas da tabela categorias (cor, centro, orçamento)
+const catsDoCentro = c => CATEGORIAS.filter(n=>{ const cs=CAT_CENTRO[n]; return !cs || cs.some(x=>!x||x===c||x==="ambos"); });
 const CAT_CORES = { "Outros": "#8792A8" };
+function aplicarCategorias(res) {
+  CAT_ROWS = res;
+  CATEGORIAS = [...new Set(res.map(r => r.nome))];
+  CAT_CENTRO = {};
+  res.forEach(r => { (CAT_CENTRO[r.nome] = CAT_CENTRO[r.nome] || []).push(r.centro || null); CAT_CORES[r.nome] = r.cor || CAT_CORES[r.nome] || "#999"; });
+}
+// Orçamento mensal de uma categoria na visão atual (soma PJ+PF no consolidado)
+const orcDe = (nome, visao) => CAT_ROWS
+  .filter(r => r.nome===nome && (visao==="ambos" || !r.centro || r.centro==="ambos" || r.centro===visao))
+  .reduce((s,r) => s + (Number(r.orcamento)||0), 0);
+const statusOrc = pct => pct>=1 ? {cor:"#B4483C",fundo:"#FBECEA",txt:"estourou"} : pct>=0.8 ? {cor:"#A6822E",fundo:"#FBF3E4",txt:"atenção"} : {cor:"#00875A",fundo:"#E6F4EE",txt:"dentro"};
+const CORES_CAT = ["#CC0000","#B4483C","#E07A1F","#A6822E","#00875A","#0F8C8C","#2F65AC","#6B4FBB","#B0457E","#5F6B7A","#1A1A1A","#8792A8"];
 
 const MEIOS = ["Crédito","Débito","Dinheiro","Pix"];
+// ─── VISÕES (PJ = centro empresa · PF = centro pessoal · Ambos = consolidado) ──
+const VISOES = {
+  empresa: { sig:"PJ",      nome:"Empresa",     desc:"Só os dados da barbearia",       cor:"#CC0000", fundo:"#FDECEC" },
+  pessoal: { sig:"PF",      nome:"Pessoal",     desc:"Só os gastos pessoais do Isaque", cor:"#2F65AC", fundo:"#EEF3FB" },
+  ambos:   { sig:"PJ + PF", nome:"Consolidado", desc:"Tudo junto, empresa e pessoal",   cor:"#1A1A1A", fundo:"#F0F0F0" },
+};
+const VISAO_KEY = "pico_visao";
+const lerVisao = () => { try { const v=localStorage.getItem(VISAO_KEY); return VISOES[v]?v:"ambos"; } catch { return "ambos"; } };
+const centroDe = x => x.centro==="pessoal" ? "pessoal" : "empresa";   // sem centro = empresa (dados antigos)
+const naVisao  = (v,x) => v==="ambos" || centroDe(x)===v;
+
+// ─── REGRAS: TRANSFERÊNCIAS PJ → PF ──────────────────────────────────────────
+// Uma linha só. Na PJ é saída, na PF é entrada, no consolidado não muda nada (não duplica).
+const efeitoTransf = (visao, valor) => visao==="empresa" ? -valor : visao==="pessoal" ? valor : 0;
+const TIPOS_TRANSF = { pro_labore:"Pró-labore", retirada:"Retirada" };
+
+// ─── REGRAS: SALDO, PREVISÃO, METAS, ALERTAS (usam os dados de todo o período) ─
+const addDias = (s, n) => { const [y,m,d]=s.split("-").map(Number); const x=new Date(y,m-1,d+n); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`; };
+const diasEntre = (a, b) => { const [y1,m1,d1]=a.split("-").map(Number), [y2,m2,d2]=b.split("-").map(Number); return Math.round((new Date(y2,m2-1,d2)-new Date(y1,m1-1,d1))/86400000); };
+const dataRec = r => r.data_de || r.semana;
+const despesaConta = l => !l.excluido && normC(l.categoria)!=="liquidacao de fatura";
+// Saldo acumulado registrado no app (receitas − despesas ± transferências) num intervalo de datas
+function saldoPeriodo(g, visao, de, ate) {
+  const dentro = d => d && (!de || d>=de) && d<=ate;
+  const rec  = g.r.filter(r=>naVisao(visao,r)&&dentro(dataRec(r))).reduce((s,r)=>s+r.valor,0);
+  const desp = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&dentro(l.data)).reduce((s,l)=>s+l.valor,0);
+  const tr   = g.t.filter(t=>dentro(t.data)).reduce((s,t)=>s+efeitoTransf(visao,t.valor),0);
+  return rec - desp + tr;
+}
+// Previsão: real (saldo hoje + contas programadas) e estimativa de entradas (média dos últimos 90 dias)
+function previsao(g, visao, dias) {
+  const hj = hoje(), fim = addDias(hj, dias);
+  const saldoHoje = saldoPeriodo(g, visao, null, hj);
+  const progs = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.data>hj&&l.data<=fim);
+  const saidas = progs.reduce((s,l)=>s+l.valor,0);
+  const transf = g.t.filter(t=>t.data>hj&&t.data<=fim).reduce((s,t)=>s+efeitoTransf(visao,t.valor),0);
+  const recs = g.r.filter(r=>naVisao(visao,r)&&dataRec(r));
+  const ini90 = addDias(hj,-89);
+  const primeira = recs.map(dataRec).sort()[0];
+  const base = primeira ? Math.min(90, Math.max(1, diasEntre(primeira>ini90?primeira:ini90, hj)+1)) : 0;
+  const rec90 = recs.filter(r=>dataRec(r)>=ini90&&dataRec(r)<=hj).reduce((s,r)=>s+r.valor,0);
+  const entradasEst = base ? (rec90/base)*dias : 0;
+  const semEstimativa = saldoHoje - saidas + transf;
+  return { saldoHoje, saidas, nProg:progs.length, transf, entradasEst, semEstimativa, comEstimativa: semEstimativa + entradasEst, baseDias: base };
+}
+const TIPOS_META = {
+  faturamento: { nome:"Faturamento mensal", desc:"Receita do mês até chegar no alvo", auto:true },
+  acumular:    { nome:"Juntar valor (reserva)", desc:"Saldo acumulado desde a data de início", auto:true },
+  limite:      { nome:"Limite de gasto", desc:"Despesa do mês (total ou de uma categoria) abaixo do alvo", auto:true },
+  manual:      { nome:"Manual", desc:"Você atualiza o valor atual (reforma, contratação, etc.)", auto:false },
+};
+const fracMes = () => { const h=hoje(), [y,m,d]=h.split("-").map(Number); return d/new Date(y,m,0).getDate(); };
+// Progresso de uma meta: { atual, alvo, pct, status:{cor,txt,nivel}, detalhe }
+function progMeta(mt, g) {
+  const hj=hoje(), mh=hj.slice(0,7), alvo=Number(mt.valor_alvo)||0, c=mt.centro||"empresa";
+  let atual=0, detalhe="";
+  if (mt.tipo==="faturamento") {
+    atual = g.r.filter(r=>naVisao(c,r)&&(dataRec(r)||"").slice(0,7)===mh).reduce((s,r)=>s+r.valor,0);
+    detalhe = "receita deste mês";
+  } else if (mt.tipo==="acumular") {
+    atual = (Number(mt.valor_inicial)||0) + saldoPeriodo(g, c, mt.data_inicio||null, hj);
+    detalhe = `saldo desde ${mt.data_inicio?fmtDate(mt.data_inicio):"o início"}`;
+  } else if (mt.tipo==="limite") {
+    atual = g.l.filter(l=>despesaConta(l)&&naVisao(c,l)&&l.mes===mh&&l.data<=hj&&(!mt.categoria||l.categoria===mt.categoria)).reduce((s,l)=>s+l.valor,0);
+    detalhe = mt.categoria ? `gasto em ${mt.categoria} neste mês` : "despesa total deste mês";
+  } else {
+    atual = Number(mt.valor_atual)||0; detalhe = "atualizado manualmente";
+  }
+  const pct = alvo>0 ? atual/alvo : 0;
+  const OK={cor:"#00875A",fundo:"#E6F4EE",nivel:0}, AT={cor:"#A6822E",fundo:"#FBF3E4",nivel:1}, CR={cor:"#B4483C",fundo:"#FBECEA",nivel:2};
+  let status;
+  if (mt.tipo==="limite") {
+    status = pct>1 ? {...CR,txt:"estourou"} : pct>fracMes()+0.1 ? {...AT,txt:"gastando rápido"} : {...OK,txt:"dentro do limite"};
+  } else if (pct>=1) status = {...OK,txt:"concluída"};
+  else if (mt.prazo && mt.prazo<hj) status = {...CR,txt:"atrasada"};
+  else {
+    let esperado = null;
+    if (mt.tipo==="faturamento") esperado = fracMes();
+    else if (mt.prazo && mt.data_inicio && mt.prazo>mt.data_inicio) esperado = Math.min(1, Math.max(0, diasEntre(mt.data_inicio,hj)/diasEntre(mt.data_inicio,mt.prazo)));
+    status = esperado!=null && pct < esperado-0.15 ? {...AT,txt:"abaixo do ritmo"} : {...OK,txt:"no ritmo"};
+  }
+  return { atual, alvo, pct, status, detalhe };
+}
+// Central de alertas: regras simples, cada uma com motivo, impacto e ação recomendada
+function gerarAlertas(g, metas, visao) {
+  const hj=hoje(), mh=hj.slice(0,7), out=[];
+  const centros = visao==="ambos" ? ["empresa","pessoal"] : [visao];
+  // 1) Contas programadas vencendo em até 3 dias
+  const vence = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.data>hj&&l.data<=addDias(hj,3)).sort((a,b)=>a.data.localeCompare(b.data));
+  if (vence.length) out.push({ nivel:1, titulo:`${vence.length} conta${vence.length>1?"s":""} vencendo em até 3 dias`,
+    motivo: vence.slice(0,3).map(l=>`${l.descricao} (${fmtDate(l.data)})`).join(", ")+(vence.length>3?"…":""),
+    impacto:`${fmt(vence.reduce((s,l)=>s+l.valor,0))} saindo do caixa`, acao:"Confira se há saldo e execute no dia certo." });
+  // 2) Caixa previsto negativo em 30 dias (real, sem contar estimativa de entradas)
+  centros.forEach(c=>{
+    const p = previsao(g, c, 30);
+    if (p.semEstimativa<0) out.push({ nivel: p.comEstimativa<0?2:1, titulo:`Caixa ${VISOES[c].sig} pode ficar negativo em 30 dias`,
+      motivo:`Saldo hoje ${fmt(p.saldoHoje)}, contas programadas ${fmt(p.saidas)}.`,
+      impacto: p.comEstimativa<0 ? `Mesmo com as entradas estimadas, fecha em ${fmt(p.comEstimativa)}.` : `Fecha em ${fmt(p.semEstimativa)} se não entrar dinheiro; com a média de entradas, ${fmt(p.comEstimativa)}.`,
+      acao:"Reveja contas programadas ou antecipe recebimentos." });
+  });
+  // 3) Orçamento por categoria no mês
+  const gastoCat = {};
+  g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.mes===mh&&l.data<=hj).forEach(l=>{ gastoCat[l.categoria]=(gastoCat[l.categoria]||0)+l.valor; });
+  Object.entries(gastoCat).forEach(([cat,val])=>{
+    const lim = orcDe(cat, visao); if (!lim) return;
+    const pct = val/lim;
+    if (pct>=0.8) out.push({ nivel: pct>=1?2:1, titulo: pct>=1?`Orçamento de ${cat} estourou`:`Orçamento de ${cat} em ${(pct*100).toFixed(0)}%`,
+      motivo:`Gasto ${fmt(val)} de ${fmt(lim)} no mês.`, impacto: pct>=1?`${fmt(val-lim)} acima do limite.`:`Restam ${fmt(lim-val)} para o mês.`,
+      acao: pct>=1?"Segure novos gastos nessa categoria até o fim do mês.":"Acompanhe os próximos gastos dessa categoria." });
+  });
+  // 4) Metas atrasadas ou fora do ritmo
+  metas.filter(m=>!m.excluido&&naVisao(visao,m)).forEach(m=>{
+    const p = progMeta(m, g);
+    if (p.status.nivel>0) out.push({ nivel:p.status.nivel, titulo:`Meta "${m.nome}": ${p.status.txt}`,
+      motivo:`${fmt(p.atual)} de ${fmt(p.alvo)} (${(p.pct*100).toFixed(0)}%) — ${p.detalhe}.`,
+      impacto: m.tipo==="limite"?"Despesa acima do planejado.":"Objetivo pode não ser atingido no prazo.",
+      acao: m.tipo==="limite"?"Reduza os gastos ligados a essa meta.":"Reveja o plano ou ajuste o prazo da meta." });
+  });
+  // 5) Queda de faturamento vs mesmo período do mês anterior (a partir do dia 7)
+  const dia = parseInt(hj.slice(8,10),10);
+  if (dia>=7) centros.forEach(c=>{
+    const [y,m]=mh.split("-").map(Number), ma=`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,"0")}`;
+    const ate = (r,mk)=>{ const d=dataRec(r)||""; return d.slice(0,7)===mk && parseInt(d.slice(8,10),10)<=dia; };
+    const atual = g.r.filter(r=>naVisao(c,r)&&ate(r,mh)).reduce((s,r)=>s+r.valor,0);
+    const ant   = g.r.filter(r=>naVisao(c,r)&&ate(r,ma)).reduce((s,r)=>s+r.valor,0);
+    if (ant>0 && atual<ant*0.8) out.push({ nivel: atual<ant*0.6?2:1, titulo:`Receita ${VISOES[c].sig} ${(((ant-atual)/ant)*100).toFixed(0)}% abaixo do mês passado`,
+      motivo:`Até o dia ${dia}: ${fmt(atual)} agora contra ${fmt(ant)} no mês anterior.`, impacto:`Diferença de ${fmt(ant-atual)}.`,
+      acao:"Verifique se todas as receitas foram lançadas e o movimento da agenda." });
+  });
+  return out.sort((a,b)=>b.nivel-a.nivel);
+}
 const MESES_NOMES_FULL = ["Janeiro","Fevereiro","Março","Abril","Maio","Junho","Julho","Agosto","Setembro","Outubro","Novembro","Dezembro"];
 const MES_INICIO = "2026-05";
 const FECHADOS = [];
@@ -229,19 +404,24 @@ function MonthPicker({mesAtual,onSelect,onClose}) {
   );
 }
 const emptyForm=()=>({centro:"empresa",descricao:"",valorDigits:"",categoria:"",meio:"",data:hoje(),obs:"",recorrente:false,repeticoes:""});
-const emptyFormReceita=()=>({descricao:"",valorDigits:"",data:hoje(),dataAte:"",obs:""});
+const emptyFormReceita=()=>({centro:"empresa",descricao:"",valorDigits:"",data:hoje(),dataAte:"",obs:""});
+function SeletorCentro({valor,onChange}) {
+  return (
+    <div style={{display:"flex",gap:4,background:"#F0F0F0",borderRadius:10,padding:4,marginBottom:16}}>
+      {[["empresa","PJ · Empresa"],["pessoal","PF · Pessoal"]].map(([k,l])=>(
+        <button key={k} type="button" onClick={()=>onChange(k)}
+          style={{flex:1,border:"none",borderRadius:8,padding:"10px 4px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:14,fontWeight:700,letterSpacing:"0.04em",textTransform:"uppercase",background:valor===k?VISOES[k].cor:"transparent",color:valor===k?"#fff":"#666"}}>{l}</button>
+      ))}
+    </div>
+  );
+}
 const INP=err=>({background:"#FAFAFA",border:`2px solid ${err?"#B4483C":"#E0E0E0"}`,borderRadius:10,color:"#1A1A1A",padding:"13px 14px",fontSize:15,fontFamily:"'Inter',sans-serif",width:"100%",transition:"border .2s"});
 const FL={fontSize:11,color:"#666666",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:7,display:"block",fontWeight:700,fontFamily:"'Inter',sans-serif"};
 function FormBody({form,setForm,erro,setErro,permiteRecorrencia}) {
   const Err=({k})=>erro[k]?<div style={{fontSize:11,color:"#B4483C",marginTop:4,fontWeight:700,fontFamily:"'Inter',sans-serif"}}>{erro[k]}</div>:null;
   return (
     <>
-      <div style={{display:"flex",gap:4,background:"#F0F0F0",borderRadius:10,padding:4,marginBottom:16}}>
-        {[["empresa","Empresa"],["pessoal","Pessoal"]].map(([k,l])=>(
-          <button key={k} type="button" onClick={()=>setForm(f=>({...f,centro:k,categoria:catsDoCentro(k).includes(f.categoria)?f.categoria:""}))}
-            style={{flex:1,border:"none",borderRadius:8,padding:"10px 4px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:15,fontWeight:700,letterSpacing:"0.06em",textTransform:"uppercase",background:form.centro===k?"#CC0000":"transparent",color:form.centro===k?"#fff":"#666"}}>{l}</button>
-        ))}
-      </div>
+      <SeletorCentro valor={form.centro} onChange={k=>setForm(f=>({...f,centro:k,categoria:catsDoCentro(k).includes(f.categoria)?f.categoria:""}))}/>
       <div style={{marginBottom:16}}>
         <label style={FL}>Descrição *</label>
         <input style={INP(erro.descricao)} placeholder="Ex: Compra de lâminas" value={form.descricao}
@@ -266,7 +446,7 @@ function FormBody({form,setForm,erro,setErro,permiteRecorrencia}) {
           {(()=>{const l=catsDoCentro(form.centro||"empresa");return (!form.categoria||l.includes(form.categoria)?l:[...l,form.categoria]).map(c=><option key={c} value={c}>{c}</option>);})()}
         </select>
         <Err k="categoria"/>
-        {catsDoCentro(form.centro||"empresa").length<=1 && <div style={{fontSize:11,color:"#A6822E",marginTop:6,fontFamily:"'Inter',sans-serif"}}>Nenhuma categoria cadastrada ainda — peça pro seu mentor cadastrar pelo Painel.</div>}
+        {catsDoCentro(form.centro||"empresa").filter(c=>c!=="Outros").length===0 && <div style={{fontSize:11,color:"#A6822E",marginTop:6,fontFamily:"'Inter',sans-serif"}}>Nenhuma categoria cadastrada ainda — peça pro seu mentor cadastrar pelo Painel.</div>}
       </div>
       <div style={{marginBottom:16}}>
         <label style={FL}>Meio de Pagamento *</label>
@@ -328,6 +508,7 @@ function FormBodyReceita({form,setForm,erro,setErro}) {
   const Err=({k})=>erro[k]?<div style={{fontSize:11,color:"#B4483C",marginTop:4,fontWeight:700,fontFamily:"'Inter',sans-serif"}}>{erro[k]}</div>:null;
   return (
     <>
+      <SeletorCentro valor={form.centro||"empresa"} onChange={k=>setForm(f=>({...f,centro:k}))}/>
       <div style={{marginBottom:16}}>
         <label style={FL}>Descrição *</label>
         <input style={INP(erro.descricao)} placeholder="Ex: Aluguel recebido — Imóvel Centro" value={form.descricao}
@@ -390,8 +571,9 @@ async function fetchRange(ini, fim) {
       fetch(`${SUPA_URL}/rest/v1/lancamentos?cliente_id=eq.${CID}&mes=gte.${ini}&mes=lte.${fim}&excluido=eq.false&order=data.desc`, { headers: H }),
       fetch(`${SUPA_URL}/rest/v1/receitas?cliente_id=eq.${CID}&mes=gte.${ini}&mes=lte.${fim}&order=semana.desc`, { headers: H }),
     ]);
-    return { l: a.ok ? await a.json() : [], r: b.ok ? await b.json() : [] };
-  } catch { return { l: [], r: [] }; }
+    const t = await tbGet("transferencias", `mes=gte.${ini}&mes=lte.${fim}&order=data.desc`);
+    return { l: a.ok ? await a.json() : [], r: b.ok ? (await b.json()).filter(x=>!x.excluido) : [], t: (t||[]).filter(x=>!x.excluido) };
+  } catch { return { l: [], r: [], t: [] }; }
 }
 const somaV = a => a.reduce((s,x)=>s+x.valor,0);
 const agCat = list => { const m={}; list.forEach(l=>{m[l.categoria]=(m[l.categoria]||0)+l.valor;}); return Object.entries(m).map(([cat,val])=>({cat,val,cor:CAT_CORES[cat]||"#999"})).sort((a,b)=>b.val-a.val); };
@@ -412,9 +594,14 @@ function Donut({ segs, size=124 }) {
     </svg>
   );
 }
-function Relatorio({ mesKey, goPeriodo }) {
+function Relatorio({ mesKey, goPeriodo, visao }) {
   const [tipo,setTipo]   = useState("mes");
-  const [dados,setDados] = useState(null);
+  const [bruto,setDados] = useState(null);
+  const dados = useMemo(()=>{
+    if(!bruto) return null;
+    const f = p => ({ l:p.l.filter(x=>naVisao(visao,x)), r:p.r.filter(x=>naVisao(visao,x)), t:p.t||[] });
+    return { cur:f(bruto.cur), prev:f(bruto.prev) };
+  },[bruto,visao]);
   const [ab,setAb]       = useState({pan:false,dist:false,det:false});
   const [catAb,setCatAb] = useState({});
   const { ini, fim, len } = rangeDe(tipo, mesKey);
@@ -462,13 +649,14 @@ function Relatorio({ mesKey, goPeriodo }) {
   const agend = dados.cur.l.filter(l=>!isLiq(l)&&l.data>hj);
   const total=somaV(lc), totAnt=somaV(lp), temAnt=lp.length>0;
   const diff = totAnt>0 ? ((total-totAnt)/totAnt)*100 : null;
-  const receita=somaV(dados.cur.r), saldo=receita-total;
+  const trEf = list => list.filter(t=>t.data<=hj).reduce((s,t)=>s+efeitoTransf(visao,t.valor),0);
+  const transf=trEf(dados.cur.t), receita=somaV(dados.cur.r), saldo=receita-total+transf;
   const emp=somaV(lc.filter(l=>l.centro!=="pessoal")), pes=somaV(lc.filter(l=>l.centro==="pessoal"));
   const meses = Array.from({length:len},(_,i)=>mAdd(ini,i));
   const decorridos = Math.max(1, meses.filter(k=>k<=mesHoje).length);
   const linhas = meses.map(k=>{
     const d=somaV(lc.filter(l=>l.mes===k)), r=somaV(dados.cur.r.filter(x=>x.mes===k));
-    return {k,d,r,s:r-d};
+    return {k,d,r,s:r-d+trEf(dados.cur.t.filter(t=>t.mes===k))};
   });
   const maxD = Math.max(1,...linhas.map(x=>x.d));
   const cats = agCat(lc);
@@ -487,11 +675,13 @@ function Relatorio({ mesKey, goPeriodo }) {
   const pc=(a,b)=>b>0?((a/b)*100).toFixed(1):"0.0";
   const vazio = total===0 && receita===0 && agend.length===0;
   const kpis = [
-    {l:"Saldo (receita − despesa)",v:fmt(saldo),sub:saldo>=0?"positivo":"negativo",cor:saldo>=0?"#1A1A1A":"#B4483C"},
+    {l:"Saldo (receita − despesa)",v:fmt(saldo),sub:(saldo>=0?"positivo":"negativo")+(transf?` · ${transf>0?"+":"−"} ${fmt(Math.abs(transf))} transf. PJ→PF`:""),cor:saldo>=0?"#1A1A1A":"#B4483C"},
     {l:`vs ${rotAnt}`,v:diff!=null?`${diff>0?"+":""}${diff.toFixed(1)}%`:"—",sub:diff!=null?(diff<0?"↓ reduziu":"↑ aumentou"):"sem comparativo",cor:diff!=null?(diff<0?"#00875A":"#B4483C"):"#888888"},
     {l:"Receita",v:fmt(receita),sub:`${dados.cur.r.length} entrada(s)`,cor:"#00875A"},
     {l:"Despesa",v:fmt(total),sub:`${lc.length} lançamentos${len>1?` · média ${fmt(total/decorridos)}/mês`:""}`,cor:"#1A1A1A"},
-    {l:"Despesa Empresa",v:fmt(emp),sub:`Pessoal ${fmt(pes)}`,cor:"#CC0000"},
+    visao==="ambos"
+      ? {l:"Despesa Empresa (PJ)",v:fmt(emp),sub:`Pessoal (PF) ${fmt(pes)}`,cor:"#CC0000"}
+      : {l:"Maior categoria",v:cats[0]?fmt(cats[0].val):"—",sub:cats[0]?`${cats[0].cat} · ${pc(cats[0].val,total)}%`:"sem despesas",cor:VISOES[visao].cor},
     {l:"A executar (programado)",v:fmt(somaV(agend)),sub:`${agend.length} conta(s)`,cor:"#8A6A1F"},
   ];
   return (
@@ -626,6 +816,12 @@ export default function App() {
   const [lastSync,setLastSync]             = useState(null);
   const [,forceCatUpdate]                  = useState(0);
   const [view,setView]                     = useState("caixa");
+  const [visao,setVisaoSt]                 = useState(lerVisao);
+  const [menuVisao,setMenuVisao]           = useState(false);
+  const setVisao = v => { setVisaoSt(v); setMenuVisao(false); try { localStorage.setItem(VISAO_KEY,v); } catch {} };
+  const nv = useCallback(x=>naVisao(visao,x),[visao]);
+  const centroPadrao = visao==="ambos" ? "empresa" : visao;   // novo lançamento já abre no centro da visão
+  const rotVisao = visao==="ambos" ? " · PJ + PF" : ` · ${VISOES[visao].sig}`;
   const [showPicker,setShowPicker]         = useState(false);
   const [showForm,setShowForm]             = useState(false);
   const [showFormReceita,setShowFormReceita]=useState(false);
@@ -654,13 +850,39 @@ export default function App() {
   const [erro,setErro]                     = useState({});
   const [erroReceita,setErroReceita]       = useState({});
   const [toast,setToast]                   = useState(null);
+  const [glob,setGlob]                     = useState({ l:[], r:[], t:[] });
+  const [transfRaw,setTransfRaw]           = useState([]);
+  const [metas,setMetas]                   = useState([]);
+  const [formTransf,setFormTransf]         = useState(null);   // {item?, f:{...}}
+  const [formMeta,setFormMeta]             = useState(null);
+  const [formCat,setFormCat]               = useState(null);
+  const [delGen,setDelGen]                 = useState(null);   // {kind:"transf"|"meta", item}
+  const [acaoGen,setAcaoGen]               = useState(null);
+  const [showAlertas,setShowAlertas]       = useState(false);
+  const [prevDias,setPrevDias]             = useState(30);
+  const [prevAberto,setPrevAberto]         = useState(false);
+  const [trAberto,setTrAberto]             = useState(false);
+  const [gerCatAberto,setGerCatAberto]     = useState(false);
+  const [erroGen,setErroGen]               = useState({});
   const mesAtual  = MESES[mesIdx];
   const mesAnt    = mesIdx>0?MESES[mesIdx-1]:null;
   const isFechado = mesAtual.fechado;
-  const items     = allItems[mesAtual.mes]||[];
-  const itemsAnt  = mesAnt?(allItems[mesAnt.mes]||[]):[];
-  const receitas  = allReceitas[mesAtual.mes]||[];
+  const items     = useMemo(()=>(allItems[mesAtual.mes]||[]).filter(nv),[allItems,mesAtual.mes,nv]);
+  const itemsAnt  = useMemo(()=>mesAnt?(allItems[mesAnt.mes]||[]).filter(nv):[],[allItems,mesAnt,nv]);
+  const receitasTodas = useMemo(()=>(allReceitas[mesAtual.mes]||[]).filter(nv),[allReceitas,mesAtual.mes,nv]);
+  const receitas  = useMemo(()=>receitasTodas.filter(r=>!r.excluido),[receitasTodas]);
 
+  // Dados de todo o período (início até +3 meses): previsão, metas, alertas e transferências
+  const loadGlobal = useCallback(async () => {
+    const [g, tRaw, mt] = await Promise.all([
+      fetchRange(MES_INICIO, mAdd(hoje().slice(0,7), 3)),
+      tbGet("transferencias", "order=data.desc"),
+      tbGet("metas", "order=criado_em.asc"),
+    ]);
+    setTransfRaw(tRaw||[]);
+    setGlob({ l:g.l, r:g.r, t:(tRaw||[]).filter(x=>!x.excluido) });
+    setMetas((mt||[]).filter(x=>!x.excluido));
+  }, []);
   const load = useCallback(async (silent=false) => {
     if (!silent) setLoading(true);
     const [dAtual, dAnt, rAtual] = await Promise.all([
@@ -671,26 +893,22 @@ export default function App() {
     setAllItems(p => ({...p, [mesAtual.mes]: (dAtual||[]), ...(mesAnt ? {[mesAnt.mes]: (dAnt||[])} : {})}));
     setAllReceitas(p => ({...p, [mesAtual.mes]: rAtual||[]}));
     setLastSync(new Date());
-    if (!silent) setLoading(false);
-  }, [mesAtual.mes, mesAnt]);
+    if (!silent) { setLoading(false); loadGlobal(); }
+  }, [mesAtual.mes, mesAnt, loadGlobal]);
 
+  const modalNovo = !!formTransf || !!formMeta || !!formCat || !!delGen || !!acaoGen || showAlertas;
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
-    if (showForm || showFormReceita || editItem || delItem || delReceita || editReceita || acaoItem || acaoReceita || ctx) return;
+    if (showForm || showFormReceita || editItem || delItem || delReceita || editReceita || acaoItem || acaoReceita || ctx || modalNovo) return;
     const t = setInterval(() => load(true), 5000);
-    return () => clearInterval(t);
-  }, [load, showForm, showFormReceita, editItem, delItem, delReceita, editReceita, acaoItem, acaoReceita, ctx]);
+    const tg = setInterval(() => loadGlobal(), 30000);
+    return () => { clearInterval(t); clearInterval(tg); };
+  }, [load, loadGlobal, showForm, showFormReceita, editItem, delItem, delReceita, editReceita, acaoItem, acaoReceita, ctx, modalNovo]);
 
-  useEffect(() => {
-    fetchCategorias().then(res => {
-      if (res && res.length > 0) {
-        CATEGORIAS = [...new Set(res.map(r => r.nome))];
-        res.forEach(r => { CAT_CENTRO[r.nome] = r.centro; });
-        res.forEach(r => { CAT_CORES[r.nome] = r.cor; });
-        forceCatUpdate(v => v + 1);
-      }
-    });
-  }, []);
+  const carregarCats = useCallback(() => fetchCategorias().then(res => {
+    if (res && res.length > 0) { aplicarCategorias(res); forceCatUpdate(v => v + 1); }
+  }), []);
+  useEffect(() => { carregarCats(); }, [carregarCats]);
 
   const ativos     = useMemo(()=>items.filter(t=>!t.excluido),[items]);
   const contaveis  = useMemo(()=>ativos.filter(t=>!isLiq(t) && t.data<=hoje()),[ativos]);
@@ -699,11 +917,26 @@ export default function App() {
   const totalAgendado = useMemo(()=>agendados.reduce((s,t)=>s+t.valor,0),[agendados]);
   const totalProgramado = total + totalAgendado;
   const totalReceita = useMemo(()=>receitas.reduce((s,r)=>s+r.valor,0),[receitas]);
-  const saldo        = totalReceita - total;
-  const maxDia     = useMemo(()=>{const d=items.map(t=>parseInt(t.data.slice(8,10)));return d.length?Math.max(...d):31;},[items]);
+  // Transferências PJ → PF do mês (todas, inclusive excluídas, para a lista)
+  const transfMesTodas = useMemo(()=>transfRaw.filter(t=>t.mes===mesAtual.mes).sort((x,y)=>(!!x.excluido-!!y.excluido)||y.data.localeCompare(x.data)),[transfRaw,mesAtual.mes]);
+  const transfMes   = useMemo(()=>transfMesTodas.filter(t=>!t.excluido&&t.data<=hoje()),[transfMesTodas]);
+  const totalTransf = useMemo(()=>transfMes.reduce((s,t)=>s+t.valor,0),[transfMes]);
+  const efTransf    = efeitoTransf(visao, totalTransf);
+  const saldo        = totalReceita - total + efTransf;
+  // Consolidado: saldo de cada lado, sem misturar o caixa da empresa com o pessoal
+  const saldosCentro = useMemo(()=>{
+    const r = c => receitas.filter(x=>centroDe(x)===c).reduce((s,x)=>s+x.valor,0);
+    const d = c => contaveis.filter(x=>centroDe(x)===c).reduce((s,x)=>s+x.valor,0);
+    return { empresa: r("empresa")-d("empresa")-totalTransf, pessoal: r("pessoal")-d("pessoal")+totalTransf };
+  },[receitas,contaveis,totalTransf]);
+  const alertas   = useMemo(()=>gerarAlertas(glob, metas, visao),[glob,metas,visao]);
+  const nivelAlerta = alertas.reduce((m,a)=>Math.max(m,a.nivel),0);
+  const prevs     = useMemo(()=>(visao==="ambos"?["empresa","pessoal","ambos"]:[visao]).map(c=>({c, p:previsao(glob,c,prevDias)})),[glob,visao,prevDias]);
+  // Corte do comparativo: mês corrente = até hoje; mês passado = mês inteiro; mês futuro = sem comparativo
+  const maxDia     = useMemo(()=>{const h=hoje(),mh=h.slice(0,7);if(mesAtual.mes===mh)return parseInt(h.slice(8,10),10);return mesAtual.mes<mh?31:0;},[mesAtual.mes]);
   const totalAnt   = useMemo(()=>soma(itemsAnt.filter(t=>parseInt(t.data.slice(8,10))<=maxDia)),[itemsAnt,maxDia]);
   const sorted     = useMemo(()=>[...items].sort((a,b)=>new Date(b.data)-new Date(a.data)),[items]);
-  const sortedReceitas = useMemo(()=>[...receitas].sort((a,b)=>new Date(b.semana)-new Date(a.semana)),[receitas]);
+  const sortedReceitas = useMemo(()=>[...receitasTodas].sort((a,b)=>(!!a.excluido-!!b.excluido)||(new Date(b.semana)-new Date(a.semana))),[receitasTodas]);
   const byCat      = useMemo(()=>{
     const m={};
     contaveis.forEach(t=>{m[t.categoria]=(m[t.categoria]||0)+t.valor;});
@@ -720,9 +953,11 @@ export default function App() {
         const d=parseInt(t.data.slice(8,10));
         return d>=sem.ini && d<=sem.fim;
       }).reduce((s,t)=>s+t.valor,0);
-      return {...sem, receita:rec, despesa:desp, saldo:rec-desp};
+      const tr = transfMes.filter(t=>{ const d=parseInt(t.data.slice(8,10)); return d>=sem.ini && d<=sem.fim; }).reduce((s,t)=>s+efeitoTransf(visao,t.valor),0);
+      const r2 = rec + Math.max(tr,0), d2 = desp + Math.max(-tr,0);
+      return {...sem, receita:r2, despesa:d2, saldo:r2-d2};
     });
-  },[receitas,contaveis,mesAtual.mes]);
+  },[receitas,contaveis,mesAtual.mes,transfMes,visao]);
 
   const showToast=msg=>{setToast(msg);setTimeout(()=>setToast(null),2500);};
   const goMes=dir=>{setMesIdx(i=>i+dir);setShowPicker(false);};
@@ -773,8 +1008,10 @@ export default function App() {
       extras = resultados.filter(Boolean).length;
     }
     load();
-    showToast(form.recorrente ? `✓ Registrado + ${extras} recorrência${extras===1?"":"s"}` : "✓ Lançamento registrado");
+    showToast((form.recorrente ? `✓ Registrado + ${extras} recorrência${extras===1?"":"s"}` : "✓ Lançamento registrado")+foraDaVisao(item.centro));
   };
+  // Aviso quando o registro vai para o outro centro e some da visão atual
+  const foraDaVisao = c => visao!=="ambos" && (c||"empresa")!==visao ? ` na ${VISOES[c||"empresa"].sig}` : "";
   const lancarReceita=async ()=>{
     const e=validarReceita(formReceita);
     if(Object.keys(e).length){setErroReceita(e);return;}
@@ -782,11 +1019,11 @@ export default function App() {
       id: uid(), cliente_id: CID, mes: formReceita.data.slice(0,7), semana: formReceita.data,
       data_de: formReceita.data, data_ate: formReceita.dataAte||formReceita.data,
       valor: d2float(formReceita.valorDigits), descricao: formReceita.descricao.trim(),
-      obs: formReceita.obs, data_lancamento: hoje(),
+      obs: formReceita.obs, data_lancamento: hoje(), centro: formReceita.centro||"empresa",
     };
-    const res = await rcPost(payload);
+    const res = await rcPostC(payload);
     setShowFormReceita(false);
-    if(res){ load(); showToast("✓ Receita registrada"); }
+    if(res){ load(); showToast("✓ Receita registrada"+foraDaVisao(payload.centro)); }
   };
   const openEdit=item=>{
     setForm({centro:item.centro||"empresa",descricao:item.descricao,valorDigits:float2d(item.valor),categoria:item.categoria,meio:item.meio,data:item.data,obs:item.obs||""});
@@ -801,7 +1038,7 @@ export default function App() {
       mes: form.data.slice(0,7), obs: form.obs,
     });
     setEditItem(null);
-    if(ok){ load(); showToast("✓ Lançamento atualizado"); }
+    if(ok){ load(); showToast("✓ Lançamento atualizado"+foraDaVisao(form.centro)); }
   };
   const confirmarExclusao=async ()=>{
     if(!motivoExc.trim()){setMotivoErr(true);return;}
@@ -814,38 +1051,111 @@ export default function App() {
       if(e.key!=="Escape") return;
       setShowForm(false);setShowFormReceita(false);setEditItem(null);setDelItem(null);setMotivoExc("");setMotivoErr(false);
       setDelReceita(null);setEditReceita(null);setAcaoItem(null);setAcaoReceita(null);setPopProg(false);setCtx(null);
-      setShowPicker(false);
+      setShowPicker(false);setMenuVisao(false);
     };
     window.addEventListener("keydown",h);
     return ()=>window.removeEventListener("keydown",h);
   },[]);
   const programarDespesa=()=>{
     setPopProg(false);setProgMode(true);
-    setForm({...emptyForm(),data:amanha()});setErro({});setShowForm(true);
+    setForm({...emptyForm(),centro:centroPadrao,data:amanha()});setErro({});setShowForm(true);
   };
   const provisionar=async t=>{
     const ok = await sbPatch(t.id, { data: hoje(), mes: hoje().slice(0,7) });
     if(ok){ load(); showToast("✓ Movido para executado"); }
   };
   const openEditReceita=r=>{
-    setFormReceita({descricao:r.descricao||"",valorDigits:float2d(r.valor),data:r.data_de||r.semana||"",dataAte:(r.data_ate&&r.data_ate!==(r.data_de||r.semana))?r.data_ate:"",obs:r.obs||""});
+    setFormReceita({centro:centroDe(r),descricao:r.descricao||"",valorDigits:float2d(r.valor),data:r.data_de||r.semana||"",dataAte:(r.data_ate&&r.data_ate!==(r.data_de||r.semana))?r.data_ate:"",obs:r.obs||""});
     setErroReceita({});setEditReceita(r);
   };
   const salvarEdicaoReceita=async ()=>{
     const e=validarReceita(formReceita);
     if(Object.keys(e).length){setErroReceita(e);return;}
-    const ok = await rcPatch(editReceita.id, {
+    const ok = await rcPatchC(editReceita.id, {
       descricao: formReceita.descricao.trim(), valor: d2float(formReceita.valorDigits),
       semana: formReceita.data, data_de: formReceita.data, data_ate: formReceita.dataAte||formReceita.data,
-      mes: formReceita.data.slice(0,7), obs: formReceita.obs,
+      mes: formReceita.data.slice(0,7), obs: formReceita.obs, centro: formReceita.centro||"empresa",
     });
     setEditReceita(null);
-    if(ok){ load(); showToast("✓ Receita atualizada"); }
+    if(ok){ load(); showToast("✓ Receita atualizada"+foraDaVisao(formReceita.centro)); }
   };
   const normTxt=x=>String(x||"").normalize("NFD").replace(/[\u0300-\u036f]/g,"").toLowerCase();
+  // ─── Transferências PJ → PF ───
+  const novaTransf = () => { setErroGen({}); setFormTransf({ f:{ tipo:"pro_labore", valorDigits:"", data:hoje(), descricao:"", obs:"" } }); };
+  const editarTransf = t => { setErroGen({}); setFormTransf({ item:t, f:{ tipo:t.tipo||"pro_labore", valorDigits:float2d(t.valor), data:t.data, descricao:t.descricao||"", obs:t.obs||"" } }); };
+  const salvarTransf = async () => {
+    const f=formTransf.f, e={};
+    if(!f.valorDigits||parseInt(f.valorDigits)===0) e.valor="Campo obrigatório";
+    if(!f.data) e.data="Campo obrigatório";
+    if(Object.keys(e).length){ setErroGen(e); return; }
+    const body = { valor:d2float(f.valorDigits), data:f.data, mes:f.data.slice(0,7), tipo:f.tipo, descricao:f.descricao.trim()||TIPOS_TRANSF[f.tipo], obs:f.obs };
+    const ed = formTransf.item;
+    const ok = ed ? await tbPatch("transferencias", ed.id, body)
+                  : !!(await tbPost("transferencias", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"" }));
+    setFormTransf(null);
+    if(ok){ load(); showToast(ed?"✓ Transferência atualizada":"✓ Transferência PJ → PF registrada"); }
+    else showToast("⚠ Não salvou — falta criar a tabela no Supabase");
+  };
+  const executarTransf = async t => { if(await tbPatch("transferencias", t.id, { data:hoje(), mes:hoje().slice(0,7) })){ load(); showToast("✓ Movido para executado"); } };
+
+  // ─── Metas ───
+  const novaMeta = () => { setErroGen({}); setFormMeta({ f:{ nome:"", descricao:"", tipo:"faturamento", centro:centroPadrao, categoria:"", iniDigits:"", alvoDigits:"", atualDigits:"", data_inicio:hoje(), prazo:"" } }); };
+  const editarMeta = m => { setErroGen({}); setFormMeta({ item:m, f:{ nome:m.nome||"", descricao:m.descricao||"", tipo:m.tipo||"manual", centro:m.centro||"empresa", categoria:m.categoria||"",
+    iniDigits:m.valor_inicial?float2d(Number(m.valor_inicial)):"", alvoDigits:m.valor_alvo?float2d(Number(m.valor_alvo)):"", atualDigits:m.valor_atual?float2d(Number(m.valor_atual)):"", data_inicio:m.data_inicio||hoje(), prazo:m.prazo||"" } }); };
+  const salvarMeta = async () => {
+    const f=formMeta.f, e={};
+    if(!f.nome.trim()) e.nome="Campo obrigatório";
+    if(!f.alvoDigits||parseInt(f.alvoDigits)===0) e.alvo="Informe o valor-alvo";
+    if(f.tipo==="acumular"&&!f.data_inicio) e.data_inicio="Informe a data de início";
+    if(f.prazo&&f.data_inicio&&f.prazo<f.data_inicio) e.prazo="O prazo deve ser depois do início";
+    if(Object.keys(e).length){ setErroGen(e); return; }
+    const body = { nome:f.nome.trim(), descricao:f.descricao.trim(), tipo:f.tipo, centro:f.centro, categoria:f.tipo==="limite"&&f.categoria?f.categoria:null,
+      valor_inicial:d2float(f.iniDigits), valor_alvo:d2float(f.alvoDigits), valor_atual:d2float(f.atualDigits), data_inicio:f.data_inicio||null, prazo:f.prazo||null };
+    const ed = formMeta.item;
+    const ok = ed ? await tbPatch("metas", ed.id, body)
+                  : !!(await tbPost("metas", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"", criado_em:new Date().toISOString() }));
+    setFormMeta(null);
+    if(ok){ loadGlobal(); showToast(ed?"✓ Meta atualizada":"✓ Meta criada"); }
+    else showToast("⚠ Não salvou — falta criar a tabela no Supabase");
+  };
+
+  // ─── Categorias (inserir nova / editar cor e orçamento) ───
+  const novaCat = () => { setErroGen({}); setFormCat({ f:{ nome:"", centro:centroPadrao, cor:CORES_CAT[0], orcDigits:"" } }); };
+  const editarCat = row => { setErroGen({}); setFormCat({ item:row, f:{ nome:row.nome, centro:row.centro||"ambos", cor:row.cor||CORES_CAT[0], orcDigits:row.orcamento?float2d(Number(row.orcamento)):"" } }); };
+  const salvarCat = async () => {
+    const f=formCat.f, ed=formCat.item, e={};
+    const nome=f.nome.trim().replace(/\s+/g," ");
+    if(!ed){
+      if(!nome) e.nome="Campo obrigatório";
+      else if(CAT_ROWS.some(r=>normC(r.nome)===normC(nome)&&(r.centro||"ambos")===f.centro)) e.nome="Já existe essa categoria nesse centro";
+    }
+    if(Object.keys(e).length){ setErroGen(e); return; }
+    const orc = f.orcDigits ? d2float(f.orcDigits) : null;
+    let ok;
+    if(ed){
+      ok = await tbPatch("categorias", ed.id, { cor:f.cor, orcamento:orc }) || await tbPatch("categorias", ed.id, { cor:f.cor });
+    } else {
+      const body = { cliente_id:CID, nome, cor:f.cor, centro:f.centro==="ambos"?null:f.centro };
+      ok = !!(await tbPost("categorias", { ...body, orcamento:orc })) || !!(await tbPost("categorias", body));
+    }
+    setFormCat(null);
+    if(ok){ await carregarCats(); showToast(ed?"✓ Categoria atualizada":`✓ Categoria "${nome}" criada`); }
+    else showToast("⚠ Não salvou — verifique a permissão da tabela categorias");
+  };
+
+  // ─── Exclusão com motivo (transferência e meta) ───
+  const confirmarDelGen = async () => {
+    if(!motivoExc.trim()){ setMotivoErr(true); return; }
+    const {kind,item} = delGen;
+    const ok = await tbPatch(kind==="transf"?"transferencias":"metas", item.id, { excluido:true, motivo_exclusao:motivoExc.trim() });
+    setDelGen(null); setMotivoExc(""); setMotivoErr(false);
+    if(ok){ load(); showToast(kind==="transf"?"Transferência excluída":"Meta excluída"); }
+  };
+
   const confirmarExclusaoReceita=async ()=>{
-    const ok = await rcDelete(delReceita.id);
-    setDelReceita(null);
+    if(!motivoExc.trim()){setMotivoErr(true);return;}
+    const ok = await rcExcluir(delReceita.id, motivoExc.trim());
+    setDelReceita(null);setMotivoExc("");setMotivoErr(false);
     if(ok){ load(); showToast("Receita excluída"); }
   };
 
@@ -902,21 +1212,25 @@ export default function App() {
       </div>
     </div>
   );
-  const ReceitaRow=({r,last})=>(
-    <div className="row-item" style={!isFechado?{...rowDiv(last),userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none"}:rowDiv(last)} {...(!isFechado?lpProps("rec",r):{})}>
+  const ReceitaRow=({r,last})=>{
+    const exc=!!r.excluido, ativo=!isFechado&&!exc;
+    return (
+    <div className={`row-item${exc?" row-excluido":""}`} style={ativo?{...rowDiv(last),userSelect:"none",WebkitUserSelect:"none",WebkitTouchCallout:"none"}:rowDiv(last)} {...(ativo?lpProps("rec",r):{})}>
       <div style={{display:"flex",gap:10,alignItems:"center",flex:1,minWidth:0}}>
-        <div style={{width:4,height:40,background:"#00875A",borderRadius:3,flexShrink:0}}/>
+        <div style={{width:4,height:exc?16:40,background:exc?"#ddd":"#00875A",borderRadius:3,flexShrink:0}}/>
         <div style={{minWidth:0}}>
-          <div style={{fontSize:14,color:"#1A1A1A",fontWeight:700,fontFamily:"'Inter',sans-serif",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{r.descricao}</div>
+          <div style={{fontSize:14,color:exc?"#aaa":"#1A1A1A",fontWeight:700,fontFamily:"'Inter',sans-serif",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",textDecoration:exc?"line-through":"none"}}>{r.descricao}</div>
           <div style={{fontSize:11,color:"#888888",fontFamily:"'Inter',sans-serif",marginTop:2}}>{perRec(r)}</div>
-          {r.obs&&<div style={{fontSize:11,color:"#888888",marginTop:1,fontStyle:"italic",fontFamily:"'Inter',sans-serif"}}>{r.obs}</div>}
+          {r.obs&&!exc&&<div style={{fontSize:11,color:"#888888",marginTop:1,fontStyle:"italic",fontFamily:"'Inter',sans-serif"}}>{r.obs}</div>}
+          {exc&&<span className="badge" style={{background:"#FBECEA",color:"#B4483C",border:"1px solid #EBBDB6"}}>Excluída{r.motivo_exclusao?` · ${r.motivo_exclusao}`:""}</span>}
         </div>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-        <div style={{fontSize:15,fontWeight:800,color:"#00875A",fontFamily:"'Inter',sans-serif"}}>{fmt(r.valor)}</div>
+        <div style={{fontSize:15,fontWeight:800,color:exc?"#bbb":"#00875A",fontFamily:"'Inter',sans-serif"}}>{fmt(r.valor)}</div>
       </div>
     </div>
-  );
+    );
+  };
 
   return (
     <div style={{fontFamily:"'Inter',sans-serif",background:"#F5F5F5",minHeight:"100vh",color:"#1A1A1A",margin:"0 auto"}} className={`app-wrap${view==="relatorio"?" wide":""}`}>
@@ -935,6 +1249,38 @@ export default function App() {
                 </span>
               )}
             </div>
+          </div>
+          <div style={{position:"relative",flexShrink:0}}>
+            <button onClick={()=>setMenuVisao(o=>!o)} title="Trocar visualização"
+              style={{display:"flex",alignItems:"center",gap:8,background:VISOES[visao].fundo,border:`2px solid ${VISOES[visao].cor}33`,borderRadius:50,padding:"4px 10px 4px 4px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
+              <span style={{width:32,height:32,borderRadius:"50%",background:VISOES[visao].cor,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+                <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>
+              </span>
+              <span style={{fontSize:12,fontWeight:800,color:VISOES[visao].cor,letterSpacing:"0.04em",whiteSpace:"nowrap"}}>{VISOES[visao].sig}</span>
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={VISOES[visao].cor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+            </button>
+            {menuVisao&&(
+              <>
+                <div style={{position:"fixed",inset:0,zIndex:299}} onClick={()=>setMenuVisao(false)}/>
+                <div style={{position:"absolute",right:0,top:"calc(100% + 8px)",width:250,background:"#fff",borderRadius:14,padding:8,boxShadow:"0 8px 32px #00000022",zIndex:300,animation:"fadeIn .15s ease"}}>
+                  <div style={{fontSize:10,color:"#888888",letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:700,padding:"6px 10px 8px"}}>Visualizar dados</div>
+                  {["empresa","pessoal","ambos"].map(k=>{
+                    const v=VISOES[k], at=visao===k;
+                    return (
+                      <button key={k} onClick={()=>setVisao(k)}
+                        style={{display:"flex",alignItems:"center",gap:10,width:"100%",background:at?v.fundo:"none",border:"none",borderRadius:10,padding:"10px",cursor:"pointer",textAlign:"left",fontFamily:"'Inter',sans-serif"}}>
+                        <span style={{minWidth:46,textAlign:"center",background:v.cor,color:"#fff",borderRadius:8,padding:"5px 6px",fontSize:11,fontWeight:800}}>{v.sig}</span>
+                        <span style={{flex:1,minWidth:0}}>
+                          <span style={{display:"block",fontSize:13,fontWeight:800,color:"#1A1A1A"}}>{v.nome}</span>
+                          <span style={{display:"block",fontSize:10.5,color:"#888888",fontWeight:600,marginTop:1}}>{v.desc}</span>
+                        </span>
+                        {at&&<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={v.cor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
           </div>
         </div>
         <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:12,paddingBottom:6,position:"relative"}}>
@@ -972,7 +1318,7 @@ export default function App() {
             <div style={{background:"#fff",borderRadius:16,padding:"24px 20px",marginBottom:14,boxShadow:"0 2px 12px #1A1A1A10"}}>
               <div style={{display:"grid",gridTemplateColumns:"7fr 3fr",gap:14,alignItems:"start"}}>
                 <div style={{minWidth:0}}>
-                  <div style={{fontSize:11,letterSpacing:"0.15em",color:"#888888",textTransform:"uppercase",marginBottom:4,fontWeight:700}}>Total lançado — {mesAtual.label}</div>
+                  <div style={{fontSize:11,letterSpacing:"0.15em",color:"#888888",textTransform:"uppercase",marginBottom:4,fontWeight:700}}>Total lançado — {mesAtual.label}{rotVisao}</div>
                   <div style={{display:"flex",alignItems:"flex-end",gap:12,flexWrap:"wrap"}}>
                     <div style={{fontSize:fmt(total).length<=11?40:fmt(total).length<=13?34:28,fontWeight:800,color:"#1A1A1A",lineHeight:1,fontFamily:"'Inter',sans-serif"}}>{fmt(total)}</div>
                     {mesAnt&&totalAnt>0&&<Comparativo atual={total} anterior={totalAnt} isParcial={!isFechado}/>}
@@ -988,8 +1334,8 @@ export default function App() {
                 </div>
               </div>
             </div>
-            {total>0&&<div style={{...card,padding:"14px 16px"}}>
-              {[["Empresa","empresa","#CC0000"],["Pessoal","pessoal","#2F65AC"]].map(([l,k,c],i)=>{
+            {visao==="ambos"&&total>0&&<div style={{...card,padding:"14px 16px"}}>
+              {[["Empresa (PJ)","empresa","#CC0000"],["Pessoal (PF)","pessoal","#2F65AC"]].map(([l,k,c],i)=>{
                 const v=contaveis.filter(t=>(t.centro||"empresa")===k).reduce((s,t)=>s+t.valor,0);
                 return <div key={k} style={{marginTop:i?12:0}}>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
@@ -1025,7 +1371,7 @@ export default function App() {
         {view==="caixa"&&(
           <>
             <div style={{background:"#fff",borderRadius:16,padding:"20px",marginBottom:14,boxShadow:"0 2px 12px #1A1A1A10"}}>
-              <div style={{fontSize:11,letterSpacing:"0.15em",color:"#888888",textTransform:"uppercase",marginBottom:12,fontWeight:700}}>Fluxo de Caixa — {mesAtual.label}</div>
+              <div style={{fontSize:11,letterSpacing:"0.15em",color:"#888888",textTransform:"uppercase",marginBottom:12,fontWeight:700}}>Fluxo de Caixa — {mesAtual.label}{rotVisao}</div>
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
                 <div style={{background:"#E6F4EE",borderRadius:12,padding:"14px",border:"1px solid #B5DCCB"}}>
                   <div style={{fontSize:9,letterSpacing:"0.15em",color:"#00704B",textTransform:"uppercase",fontWeight:800,marginBottom:4}}>Receita</div>
@@ -1121,7 +1467,7 @@ export default function App() {
             }
           </>
         )}
-        {view==="relatorio"&&<Relatorio mesKey={mesAtual.mes} goPeriodo={n=>setMesIdx(i=>Math.max(0,Math.min(MESES.length-1,i+n)))}/>}
+        {view==="relatorio"&&<Relatorio mesKey={mesAtual.mes} visao={visao} goPeriodo={n=>setMesIdx(i=>Math.max(0,Math.min(MESES.length-1,i+n)))}/>}
         {view==="historico"&&(
           <>
             <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:16}}>
@@ -1161,12 +1507,12 @@ export default function App() {
       </div>
 
       {!anyModal&&!isFechado&&view!=="caixa"&&view!=="relatorio"&&(
-        <button className="fab" onClick={()=>{setProgMode(false);setForm(emptyForm());setErro({});setShowForm(true);}}>
+        <button className="fab" onClick={()=>{setProgMode(false);setForm({...emptyForm(),centro:centroPadrao});setErro({});setShowForm(true);}}>
           <span style={{fontSize:20,lineHeight:1}}>+</span> Novo Lançamento
         </button>
       )}
       {!anyModal&&!isFechado&&view==="caixa"&&(
-        <button className="fab fab-gold" onClick={()=>{setFormReceita(emptyFormReceita());setErroReceita({});setShowFormReceita(true);}}>
+        <button className="fab fab-gold" onClick={()=>{setFormReceita({...emptyFormReceita(),centro:centroPadrao});setErroReceita({});setShowFormReceita(true);}}>
           <span style={{fontSize:20,lineHeight:1}}>+</span> Nova Receita
         </button>
       )}
@@ -1323,17 +1669,22 @@ export default function App() {
         </div>
       )}
       {delReceita&&(
-        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)setDelReceita(null);}}>
+        <div className="overlay" onClick={e=>{if(e.target===e.currentTarget){setDelReceita(null);setMotivoExc("");setMotivoErr(false);}}}>
           <div className="sheet">
             <div className="handle"/>
             <div style={{fontSize:18,fontWeight:800,color:"#B4483C",marginBottom:6,fontFamily:"'Inter',sans-serif"}}>Excluir Receita</div>
             <div style={{fontSize:14,color:"#1A1A1A",marginBottom:2,fontWeight:700,fontFamily:"'Inter',sans-serif"}}>{delReceita.descricao}</div>
             <div style={{fontSize:13,color:"#888888",marginBottom:20,fontFamily:"'Inter',sans-serif"}}>{fmt(delReceita.valor)} · {perRec(delReceita)}</div>
             <div style={{background:"#FBECEA",border:"1px solid #EBBDB633",borderRadius:10,padding:"12px 14px",marginBottom:20,fontSize:13,color:"#B4483C",fontWeight:700,fontFamily:"'Inter',sans-serif"}}>
-              Este recebimento será removido do fluxo de caixa.
+              Este recebimento sai do fluxo de caixa e fica registrado como excluído.
             </div>
+            <label style={FL}>Motivo da Exclusão *</label>
+            <textarea placeholder="Descreva o motivo..." value={motivoExc} onChange={e=>{setMotivoExc(e.target.value);setMotivoErr(false);}}
+              style={{background:"#FAFAFA",border:`2px solid ${motivoErr?"#B4483C":"#E0E0E0"}`,borderRadius:10,color:"#1A1A1A",padding:"13px 14px",fontSize:14,fontFamily:"'Inter',sans-serif",width:"100%",minHeight:90,resize:"none"}}/>
+            {motivoErr&&<div style={{fontSize:11,color:"#B4483C",marginTop:4,fontWeight:700,fontFamily:"'Inter',sans-serif"}}>Informe o motivo da exclusão</div>}
+            <div style={{height:16}}/>
             <button className="btn-primary" style={{background:"#B4483C"}} onClick={confirmarExclusaoReceita}>Confirmar Exclusão</button>
-            <button className="btn-ghost" onClick={()=>setDelReceita(null)}>Cancelar</button>
+            <button className="btn-ghost" onClick={()=>{setDelReceita(null);setMotivoExc("");setMotivoErr(false);}}>Cancelar</button>
           </div>
         </div>
       )}
