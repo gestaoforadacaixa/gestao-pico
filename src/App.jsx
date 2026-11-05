@@ -104,19 +104,28 @@ function aplicarCategorias(res) {
   CAT_CENTRO = {};
   res.forEach(r => { (CAT_CENTRO[r.nome] = CAT_CENTRO[r.nome] || []).push(r.centro || null); CAT_CORES[r.nome] = r.cor || CAT_CORES[r.nome] || "#999"; });
 }
-// Orçamento mensal de uma categoria na visão atual (soma PJ+PF no consolidado)
-const orcDe = (nome, visao) => CAT_ROWS
-  .filter(r => r.nome===nome && (visao==="ambos" || !r.centro || r.centro==="ambos" || r.centro===visao))
-  .reduce((s,r) => s + (Number(r.orcamento)||0), 0);
-const statusOrc = pct => pct>=1 ? {cor:"#B4483C",fundo:"#FBECEA",txt:"estourou"} : pct>=0.8 ? {cor:"#A6822E",fundo:"#FBF3E4",txt:"atenção"} : {cor:"#00875A",fundo:"#E6F4EE",txt:"dentro"};
-const CORES_CAT = ["#CC0000","#B4483C","#E07A1F","#A6822E","#00875A","#0F8C8C","#2F65AC","#6B4FBB","#B0457E","#5F6B7A","#1A1A1A","#8792A8"];
+const CORES_CAT = ["#CC0000","#B4483C","#E07A1F","#A6822E","#00875A","#0F8C8C","#2F65AC","#6B4FBB","#B0457E","#5F6B7A","#1A1A1A","#8792A8",
+  "#D9534F","#F0A500","#7CB342","#26A69A","#29B6F6","#5C6BC0","#AB47BC","#EC407A","#8D6E63","#78909C","#C0CA33","#FF7043"];
+// Sorteia uma cor que ainda não está em uso por nenhuma categoria; se todas estiverem, gera uma nova
+function corLivre() {
+  const usadas = new Set(CAT_ROWS.map(r=>String(r.cor||"").toUpperCase()));
+  const livres = CORES_CAT.filter(c=>!usadas.has(c.toUpperCase()));
+  if (livres.length) return livres[Math.floor(Math.random()*livres.length)];
+  for (let k=0; k<50; k++) {
+    const h=Math.floor(Math.random()*360), sat=55+Math.floor(Math.random()*25), l=38+Math.floor(Math.random()*14);
+    const a=sat*Math.min(l,100-l)/10000, f=n=>{ const kk=(n+h/30)%12; return Math.round(255*(l/100-a*Math.max(-1,Math.min(kk-3,9-kk,1)))).toString(16).padStart(2,"0"); };
+    const c=`#${f(0)}${f(8)}${f(4)}`.toUpperCase();
+    if (!usadas.has(c)) return c;
+  }
+  return "#8792A8";
+}
 
 const MEIOS = ["Crédito","Débito","Dinheiro","Pix"];
 // ─── VISÕES (PJ = centro empresa · PF = centro pessoal · Ambos = consolidado) ──
 const VISOES = {
-  empresa: { sig:"PJ",      nome:"Empresa",     desc:"Só os dados da barbearia",       cor:"#CC0000", fundo:"#FDECEC" },
-  pessoal: { sig:"PF",      nome:"Pessoal",     desc:"Só os gastos pessoais do Isaque", cor:"#2F65AC", fundo:"#EEF3FB" },
-  ambos:   { sig:"PJ + PF", nome:"Consolidado", desc:"Tudo junto, empresa e pessoal",   cor:"#1A1A1A", fundo:"#F0F0F0" },
+  empresa: { nome:"Pico Barbershop", curto:"Pico",   ini:"P", desc:"Só os dados da barbearia",       cor:"#CC0000", fundo:"#FDECEC" },
+  pessoal: { nome:"Isaque",          curto:"Isaque", ini:"I", desc:"Só os dados pessoais do Isaque",  cor:"#2F65AC", fundo:"#EEF3FB" },
+  ambos:   { nome:"Ambos",           curto:"Ambos",  ini:"A", desc:"Barbearia e Isaque, lado a lado", cor:"#1A1A1A", fundo:"#F0F0F0" },
 };
 const VISAO_KEY = "pico_visao";
 const lerVisao = () => { try { const v=localStorage.getItem(VISAO_KEY); return VISOES[v]?v:"ambos"; } catch { return "ambos"; } };
@@ -132,6 +141,7 @@ const TIPOS_TRANSF = { pro_labore:"Pró-labore", retirada:"Retirada" };
 const addDias = (s, n) => { const [y,m,d]=s.split("-").map(Number); const x=new Date(y,m-1,d+n); return `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,"0")}-${String(x.getDate()).padStart(2,"0")}`; };
 const diasEntre = (a, b) => { const [y1,m1,d1]=a.split("-").map(Number), [y2,m2,d2]=b.split("-").map(Number); return Math.round((new Date(y2,m2-1,d2)-new Date(y1,m1-1,d1))/86400000); };
 const dataRec = r => r.data_de || r.semana;
+const recProg = r => (dataRec(r)||"") > hoje();   // receita futura = a receber (fora dos totais até a data)
 const despesaConta = l => !l.excluido && normC(l.categoria)!=="liquidacao de fatura";
 // Saldo acumulado registrado no app (receitas − despesas ± transferências) num intervalo de datas
 function saldoPeriodo(g, visao, de, ate) {
@@ -148,85 +158,108 @@ function previsao(g, visao, dias) {
   const progs = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.data>hj&&l.data<=fim);
   const saidas = progs.reduce((s,l)=>s+l.valor,0);
   const transf = g.t.filter(t=>t.data>hj&&t.data<=fim).reduce((s,t)=>s+efeitoTransf(visao,t.valor),0);
+  const recFut = g.r.filter(r=>naVisao(visao,r)&&dataRec(r)>hj&&dataRec(r)<=fim);
+  const entradasProg = recFut.reduce((s,r)=>s+r.valor,0);
   const recs = g.r.filter(r=>naVisao(visao,r)&&dataRec(r));
   const ini90 = addDias(hj,-89);
   const primeira = recs.map(dataRec).sort()[0];
   const base = primeira ? Math.min(90, Math.max(1, diasEntre(primeira>ini90?primeira:ini90, hj)+1)) : 0;
   const rec90 = recs.filter(r=>dataRec(r)>=ini90&&dataRec(r)<=hj).reduce((s,r)=>s+r.valor,0);
-  const entradasEst = base ? (rec90/base)*dias : 0;
-  const semEstimativa = saldoHoje - saidas + transf;
-  return { saldoHoje, saidas, nProg:progs.length, transf, entradasEst, semEstimativa, comEstimativa: semEstimativa + entradasEst, baseDias: base };
+  const entradasEst = base ? Math.max(0, (rec90/base)*dias - entradasProg) : 0;
+  const semEstimativa = saldoHoje - saidas + transf + entradasProg;
+  return { saldoHoje, saidas, nProg:progs.length, transf, entradasProg, nRecProg:recFut.length, entradasEst, semEstimativa, comEstimativa: semEstimativa + entradasEst, baseDias: base };
 }
-const TIPOS_META = {
-  faturamento: { nome:"Faturamento mensal", desc:"Receita do mês até chegar no alvo", auto:true },
-  acumular:    { nome:"Juntar valor (reserva)", desc:"Saldo acumulado desde a data de início", auto:true },
-  limite:      { nome:"Limite de gasto", desc:"Despesa do mês (total ou de uma categoria) abaixo do alvo", auto:true },
-  manual:      { nome:"Manual", desc:"Você atualiza o valor atual (reforma, contratação, etc.)", auto:false },
+const GRUPOS_META = {
+  financeira: { nome:"Financeira", icone:"💰", desc:"Valores em R$: faturamento, reserva, limite de gasto ou um valor livre." },
+  objetiva:   { nome:"Objetiva",   icone:"🎯", desc:"Conquistas: contratar, concluir uma obra, chegar a 100 assinantes." },
 };
+const TIPOS_META = {
+  faturamento: { grupo:"financeira", nome:"Faturamento mensal", icone:"📈", desc:"Receita recebida no mês até chegar no alvo. Renova todo mês.", auto:true, mensal:true },
+  acumular:    { grupo:"financeira", nome:"Reserva",            icone:"🏦", desc:"Soma a sobra de caixa desde a data de início.", auto:true },
+  limite:      { grupo:"financeira", nome:"Limite de gasto",    icone:"🛡️", desc:"Gastar no máximo o limite no mês (total ou de uma categoria). Renova todo mês.", auto:true, mensal:true },
+  valor:       { grupo:"financeira", nome:"Valor livre",        icone:"💵", desc:"Você informa quanto já tem (ex.: juntar para a reforma).", auto:false },
+  quantidade:  { grupo:"objetiva",   nome:"Quantidade",         icone:"🔢", desc:"Contar até um número (ex.: 100 assinantes, 2 barbeiros novos).", auto:false },
+  etapas:      { grupo:"objetiva",   nome:"Etapas",             icone:"✅", desc:"Checklist: cada etapa concluída faz a meta avançar.", auto:false },
+};
+const tipoMeta = t => t==="manual" ? "valor" : (TIPOS_META[t] ? t : "valor");
+const lerEtapas = m => { let e=m.etapas; if(typeof e==="string"){ try{ e=JSON.parse(e); }catch{ e=[]; } } return Array.isArray(e)?e:[]; };
+const fmtMeta = (m, v) => { const t=tipoMeta(m.tipo); return t==="quantidade" ? `${Math.round(v).toLocaleString("pt-BR")}${m.unidade?" "+m.unidade:""}` : t==="etapas" ? `${v} etapa${v===1?"":"s"}` : fmt(v); };
 const fracMes = () => { const h=hoje(), [y,m,d]=h.split("-").map(Number); return d/new Date(y,m,0).getDate(); };
-// Progresso de uma meta: { atual, alvo, pct, status:{cor,txt,nivel}, detalhe }
+// Progresso de uma meta: atual, alvo, %, status, prazo e a "dica" do que falta
 function progMeta(mt, g) {
-  const hj=hoje(), mh=hj.slice(0,7), alvo=Number(mt.valor_alvo)||0, c=mt.centro||"empresa";
-  let atual=0, detalhe="";
-  if (mt.tipo==="faturamento") {
-    atual = g.r.filter(r=>naVisao(c,r)&&(dataRec(r)||"").slice(0,7)===mh).reduce((s,r)=>s+r.valor,0);
-    detalhe = "receita deste mês";
-  } else if (mt.tipo==="acumular") {
+  const hj=hoje(), mh=hj.slice(0,7), tipo=tipoMeta(mt.tipo), T=TIPOS_META[tipo], c=mt.centro||"empresa";
+  const [yy,mm]=mh.split("-").map(Number), fimMes=`${mh}-${String(new Date(yy,mm,0).getDate()).padStart(2,"0")}`;
+  let alvo=Number(mt.valor_alvo)||0, atual=0, detalhe="";
+  if (tipo==="faturamento") {
+    atual = g.r.filter(r=>naVisao(c,r)&&(dataRec(r)||"").slice(0,7)===mh&&!recProg(r)).reduce((s,r)=>s+r.valor,0);
+    detalhe = "recebido neste mês";
+  } else if (tipo==="acumular") {
     atual = (Number(mt.valor_inicial)||0) + saldoPeriodo(g, c, mt.data_inicio||null, hj);
-    detalhe = `saldo desde ${mt.data_inicio?fmtDate(mt.data_inicio):"o início"}`;
-  } else if (mt.tipo==="limite") {
+    detalhe = `sobra de caixa desde ${mt.data_inicio?fmtDate(mt.data_inicio):"o início"}`;
+  } else if (tipo==="limite") {
     atual = g.l.filter(l=>despesaConta(l)&&naVisao(c,l)&&l.mes===mh&&l.data<=hj&&(!mt.categoria||l.categoria===mt.categoria)).reduce((s,l)=>s+l.valor,0);
     detalhe = mt.categoria ? `gasto em ${mt.categoria} neste mês` : "despesa total deste mês";
+  } else if (tipo==="etapas") {
+    const e=lerEtapas(mt); alvo=e.length; atual=e.filter(x=>x.ok).length;
+    detalhe = `${atual} de ${alvo} etapas concluídas`;
   } else {
-    atual = Number(mt.valor_atual)||0; detalhe = "atualizado manualmente";
+    atual = Number(mt.valor_atual)||0; detalhe = "atualizado por você";
   }
   const pct = alvo>0 ? atual/alvo : 0;
+  const fim = T.mensal ? fimMes : (mt.prazo||null);
+  const diasRest = fim ? diasEntre(hj, fim) : null;
+  const falta = Math.max(0, alvo-atual), diasCont = Math.max(1, (diasRest??0)+1);
+  let dica = "";
+  if (tipo==="faturamento") dica = falta>0 ? `Faltam ${fmt(falta)} · ${fmt(falta/diasCont)} por dia até o fim do mês` : "Alvo do mês batido!";
+  else if (tipo==="limite") dica = atual<=alvo ? `Pode gastar ${fmt((alvo-atual)/diasCont)} por dia até o fim do mês` : `${fmt(atual-alvo)} acima do limite`;
+  else if (falta>0 && (tipo==="acumular"||tipo==="valor")) dica = diasRest>0 ? `Faltam ${fmt(falta)} · cerca de ${fmt(falta/Math.max(1,diasRest/30))} por mês` : `Faltam ${fmt(falta)}`;
+  else if (falta>0 && tipo==="quantidade") dica = `Faltam ${fmtMeta(mt,falta)}`;
+  else if (falta>0 && tipo==="etapas") dica = `Falta${falta>1?"m":""} ${falta} etapa${falta>1?"s":""}`;
+  // Realizada: concluída (data registrada) ou, na reserva automática, quando o saldo chega no alvo
+  const realizada = !!mt.concluida_em || (tipo==="acumular" && alvo>0 && pct>=1);
   const OK={cor:"#00875A",fundo:"#E6F4EE",nivel:0}, AT={cor:"#A6822E",fundo:"#FBF3E4",nivel:1}, CR={cor:"#B4483C",fundo:"#FBECEA",nivel:2};
   let status;
-  if (mt.tipo==="limite") {
-    status = pct>1 ? {...CR,txt:"estourou"} : pct>fracMes()+0.1 ? {...AT,txt:"gastando rápido"} : {...OK,txt:"dentro do limite"};
-  } else if (pct>=1) status = {...OK,txt:"concluída"};
-  else if (mt.prazo && mt.prazo<hj) status = {...CR,txt:"atrasada"};
+  if (realizada) status = {...OK, txt:"realizada"};
+  else if (tipo==="limite") status = pct>1 ? {...CR,txt:"estourou"} : pct>fracMes()+0.1 ? {...AT,txt:"gastando rápido"} : {...OK,txt:"dentro do limite"};
+  else if (tipo==="faturamento" && pct>=1) status = {...OK, txt:"batida no mês"};
+  else if (pct>=1) status = {...OK, txt:"alvo atingido"};
+  else if (diasRest!=null && diasRest<0) status = {...CR, txt:"atrasada"};
   else {
     let esperado = null;
-    if (mt.tipo==="faturamento") esperado = fracMes();
-    else if (mt.prazo && mt.data_inicio && mt.prazo>mt.data_inicio) esperado = Math.min(1, Math.max(0, diasEntre(mt.data_inicio,hj)/diasEntre(mt.data_inicio,mt.prazo)));
+    const ini = mt.data_inicio || (mt.criado_em||"").slice(0,10);
+    if (tipo==="faturamento") esperado = fracMes();
+    else if (mt.prazo && ini && mt.prazo>ini) esperado = Math.min(1, Math.max(0, diasEntre(ini,hj)/diasEntre(ini,mt.prazo)));
     status = esperado!=null && pct < esperado-0.15 ? {...AT,txt:"abaixo do ritmo"} : {...OK,txt:"no ritmo"};
   }
-  return { atual, alvo, pct, status, detalhe };
+  return { tipo, atual, alvo, pct, status, detalhe, dica, diasRest, mensal:!!T.mensal, realizada };
 }
 // Central de alertas: regras simples, cada uma com motivo, impacto e ação recomendada
 function gerarAlertas(g, metas, visao) {
   const hj=hoje(), mh=hj.slice(0,7), out=[];
   const centros = visao==="ambos" ? ["empresa","pessoal"] : [visao];
+  // 0) Contas que vencem hoje
+  const hojeL = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.data===hj);
+  if (hojeL.length) out.push({ nivel:2, hoje:true, titulo:`${hojeL.length} conta${hojeL.length>1?"s":""} para pagar hoje`,
+    motivo: hojeL.slice(0,4).map(l=>`${l.descricao} (${fmt(l.valor)})`).join(", ")+(hojeL.length>4?"…":""),
+    impacto:`${fmt(hojeL.reduce((s,l)=>s+l.valor,0))} vencendo hoje`, acao:"Pague hoje para evitar juros e multa. Se já pagou, está tudo certo." });
   // 1) Contas programadas vencendo em até 3 dias
   const vence = g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.data>hj&&l.data<=addDias(hj,3)).sort((a,b)=>a.data.localeCompare(b.data));
-  if (vence.length) out.push({ nivel:1, titulo:`${vence.length} conta${vence.length>1?"s":""} vencendo em até 3 dias`,
+  if (vence.length) out.push({ nivel:1, titulo:`${vence.length} conta${vence.length>1?"s":""} vencendo nos próximos 3 dias`,
     motivo: vence.slice(0,3).map(l=>`${l.descricao} (${fmtDate(l.data)})`).join(", ")+(vence.length>3?"…":""),
     impacto:`${fmt(vence.reduce((s,l)=>s+l.valor,0))} saindo do caixa`, acao:"Confira se há saldo e execute no dia certo." });
   // 2) Caixa previsto negativo em 30 dias (real, sem contar estimativa de entradas)
   centros.forEach(c=>{
     const p = previsao(g, c, 30);
-    if (p.semEstimativa<0) out.push({ nivel: p.comEstimativa<0?2:1, titulo:`Caixa ${VISOES[c].sig} pode ficar negativo em 30 dias`,
+    if (p.semEstimativa<0) out.push({ nivel: p.comEstimativa<0?2:1, titulo:`Caixa ${VISOES[c].nome} pode ficar negativo em 30 dias`,
       motivo:`Saldo hoje ${fmt(p.saldoHoje)}, contas programadas ${fmt(p.saidas)}.`,
       impacto: p.comEstimativa<0 ? `Mesmo com as entradas estimadas, fecha em ${fmt(p.comEstimativa)}.` : `Fecha em ${fmt(p.semEstimativa)} se não entrar dinheiro; com a média de entradas, ${fmt(p.comEstimativa)}.`,
       acao:"Reveja contas programadas ou antecipe recebimentos." });
-  });
-  // 3) Orçamento por categoria no mês
-  const gastoCat = {};
-  g.l.filter(l=>despesaConta(l)&&naVisao(visao,l)&&l.mes===mh&&l.data<=hj).forEach(l=>{ gastoCat[l.categoria]=(gastoCat[l.categoria]||0)+l.valor; });
-  Object.entries(gastoCat).forEach(([cat,val])=>{
-    const lim = orcDe(cat, visao); if (!lim) return;
-    const pct = val/lim;
-    if (pct>=0.8) out.push({ nivel: pct>=1?2:1, titulo: pct>=1?`Orçamento de ${cat} estourou`:`Orçamento de ${cat} em ${(pct*100).toFixed(0)}%`,
-      motivo:`Gasto ${fmt(val)} de ${fmt(lim)} no mês.`, impacto: pct>=1?`${fmt(val-lim)} acima do limite.`:`Restam ${fmt(lim-val)} para o mês.`,
-      acao: pct>=1?"Segure novos gastos nessa categoria até o fim do mês.":"Acompanhe os próximos gastos dessa categoria." });
   });
   // 4) Metas atrasadas ou fora do ritmo
   metas.filter(m=>!m.excluido&&naVisao(visao,m)).forEach(m=>{
     const p = progMeta(m, g);
     if (p.status.nivel>0) out.push({ nivel:p.status.nivel, titulo:`Meta "${m.nome}": ${p.status.txt}`,
-      motivo:`${fmt(p.atual)} de ${fmt(p.alvo)} (${(p.pct*100).toFixed(0)}%) — ${p.detalhe}.`,
+      motivo:`${fmtMeta(m,p.atual)} de ${fmtMeta(m,p.alvo)} (${(p.pct*100).toFixed(0)}%) — ${p.detalhe}.`,
       impacto: m.tipo==="limite"?"Despesa acima do planejado.":"Objetivo pode não ser atingido no prazo.",
       acao: m.tipo==="limite"?"Reduza os gastos ligados a essa meta.":"Reveja o plano ou ajuste o prazo da meta." });
   });
@@ -237,7 +270,7 @@ function gerarAlertas(g, metas, visao) {
     const ate = (r,mk)=>{ const d=dataRec(r)||""; return d.slice(0,7)===mk && parseInt(d.slice(8,10),10)<=dia; };
     const atual = g.r.filter(r=>naVisao(c,r)&&ate(r,mh)).reduce((s,r)=>s+r.valor,0);
     const ant   = g.r.filter(r=>naVisao(c,r)&&ate(r,ma)).reduce((s,r)=>s+r.valor,0);
-    if (ant>0 && atual<ant*0.8) out.push({ nivel: atual<ant*0.6?2:1, titulo:`Receita ${VISOES[c].sig} ${(((ant-atual)/ant)*100).toFixed(0)}% abaixo do mês passado`,
+    if (ant>0 && atual<ant*0.8) out.push({ nivel: atual<ant*0.6?2:1, titulo:`Receita ${VISOES[c].nome} ${(((ant-atual)/ant)*100).toFixed(0)}% abaixo do mês passado`,
       motivo:`Até o dia ${dia}: ${fmt(atual)} agora contra ${fmt(ant)} no mês anterior.`, impacto:`Diferença de ${fmt(ant-atual)}.`,
       acao:"Verifique se todas as receitas foram lançadas e o movimento da agenda." });
   });
@@ -309,6 +342,15 @@ input:focus,select:focus,textarea:focus{outline:none;border-color:#CC0000!import
 .app-wrap{max-width:480px}
 .kpi-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
 @media (min-width:900px){.kpi-grid{grid-template-columns:repeat(6,1fr);gap:8px}.app-wrap.wide{max-width:1240px}}
+.kpi-v{font-size:22px;overflow-wrap:anywhere}
+@media (max-width:420px){.kpi-v{font-size:18px}.badge-mes{display:none!important}}
+.metas-grid{display:grid;grid-template-columns:1fr;gap:0 12px}
+.meta-form{display:grid;grid-template-columns:1fr;gap:18px}
+@media (min-width:900px){.metas-grid{grid-template-columns:1fr 1fr}.meta-form{grid-template-columns:1.3fr 1fr;align-items:start}.meta-form>div:last-child{position:sticky;top:180px}}
+.so-cel{display:none}
+@media (max-width:420px){.so-pc{display:none}.so-cel{display:inline}}
+.prev-grid{display:grid;grid-template-columns:1fr;gap:0}
+@media (min-width:900px){.prev-grid{grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:10px}}
 .navtabs{scrollbar-width:none}.navtabs::-webkit-scrollbar{display:none}
 html,body{background:#F5F5F5}
 @media (min-width:900px){.app-wrap{max-width:900px}.sheet{max-width:520px}}
@@ -408,9 +450,9 @@ const emptyFormReceita=()=>({centro:"empresa",descricao:"",valorDigits:"",data:h
 function SeletorCentro({valor,onChange}) {
   return (
     <div style={{display:"flex",gap:4,background:"#F0F0F0",borderRadius:10,padding:4,marginBottom:16}}>
-      {[["empresa","PJ · Empresa"],["pessoal","PF · Pessoal"]].map(([k,l])=>(
+      {["empresa","pessoal"].map(k=>[k,VISOES[k].nome]).map(([k,l])=>(
         <button key={k} type="button" onClick={()=>onChange(k)}
-          style={{flex:1,border:"none",borderRadius:8,padding:"10px 4px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:14,fontWeight:700,letterSpacing:"0.04em",textTransform:"uppercase",background:valor===k?VISOES[k].cor:"transparent",color:valor===k?"#fff":"#666"}}>{l}</button>
+          style={{flex:1,border:"none",borderRadius:8,padding:"10px 4px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:13.5,fontWeight:700,background:valor===k?VISOES[k].cor:"transparent",color:valor===k?"#fff":"#666"}}>{l}</button>
       ))}
     </div>
   );
@@ -530,6 +572,11 @@ function FormBodyReceita({form,setForm,erro,setErro}) {
         <input type="date" style={INP(erro.data)} value={form.data}
           onChange={e=>{setForm(f=>({...f,data:e.target.value}));setErro(r=>({...r,data:null}));}}/>
         <Err k="data"/>
+        {form.data>hoje()&&(
+          <div style={{background:"#E6F4EE",border:"1px solid #B5DCCB",borderRadius:10,padding:"10px 12px",marginTop:8,fontSize:11.5,color:"#00704B",fontWeight:600,fontFamily:"'Inter',sans-serif"}}>
+            📅 Data futura — fica "a receber" e só entra no fluxo de caixa a partir de {fmtDate(form.data)}.
+          </div>
+        )}
       </div>
       <div style={{marginBottom:16}}>
         <label style={FL}>Até (opcional — se for um período)</label>
@@ -650,12 +697,13 @@ function Relatorio({ mesKey, goPeriodo, visao }) {
   const total=somaV(lc), totAnt=somaV(lp), temAnt=lp.length>0;
   const diff = totAnt>0 ? ((total-totAnt)/totAnt)*100 : null;
   const trEf = list => list.filter(t=>t.data<=hj).reduce((s,t)=>s+efeitoTransf(visao,t.valor),0);
-  const transf=trEf(dados.cur.t), receita=somaV(dados.cur.r), saldo=receita-total+transf;
+  const recOk=dados.cur.r.filter(r=>!recProg(r)), recFut=dados.cur.r.filter(recProg);
+  const transf=trEf(dados.cur.t), receita=somaV(recOk), saldo=receita-total+transf;
   const emp=somaV(lc.filter(l=>l.centro!=="pessoal")), pes=somaV(lc.filter(l=>l.centro==="pessoal"));
   const meses = Array.from({length:len},(_,i)=>mAdd(ini,i));
   const decorridos = Math.max(1, meses.filter(k=>k<=mesHoje).length);
   const linhas = meses.map(k=>{
-    const d=somaV(lc.filter(l=>l.mes===k)), r=somaV(dados.cur.r.filter(x=>x.mes===k));
+    const d=somaV(lc.filter(l=>l.mes===k)), r=somaV(recOk.filter(x=>x.mes===k));
     return {k,d,r,s:r-d+trEf(dados.cur.t.filter(t=>t.mes===k))};
   });
   const maxD = Math.max(1,...linhas.map(x=>x.d));
@@ -675,12 +723,12 @@ function Relatorio({ mesKey, goPeriodo, visao }) {
   const pc=(a,b)=>b>0?((a/b)*100).toFixed(1):"0.0";
   const vazio = total===0 && receita===0 && agend.length===0;
   const kpis = [
-    {l:"Saldo (receita − despesa)",v:fmt(saldo),sub:(saldo>=0?"positivo":"negativo")+(transf?` · ${transf>0?"+":"−"} ${fmt(Math.abs(transf))} transf. PJ→PF`:""),cor:saldo>=0?"#1A1A1A":"#B4483C"},
+    {l:"Saldo (receita − despesa)",v:fmt(saldo),sub:(saldo>=0?"positivo":"negativo")+(transf?` · ${transf>0?"+":"−"} ${fmt(Math.abs(transf))} transf. Pico → Isaque`:""),cor:saldo>=0?"#1A1A1A":"#B4483C"},
     {l:`vs ${rotAnt}`,v:diff!=null?`${diff>0?"+":""}${diff.toFixed(1)}%`:"—",sub:diff!=null?(diff<0?"↓ reduziu":"↑ aumentou"):"sem comparativo",cor:diff!=null?(diff<0?"#00875A":"#B4483C"):"#888888"},
-    {l:"Receita",v:fmt(receita),sub:`${dados.cur.r.length} entrada(s)`,cor:"#00875A"},
+    {l:"Receita",v:fmt(receita),sub:`${recOk.length} entrada(s)`+(recFut.length?` · + ${fmt(somaV(recFut))} a receber`:""),cor:"#00875A"},
     {l:"Despesa",v:fmt(total),sub:`${lc.length} lançamentos${len>1?` · média ${fmt(total/decorridos)}/mês`:""}`,cor:"#1A1A1A"},
     visao==="ambos"
-      ? {l:"Despesa Empresa (PJ)",v:fmt(emp),sub:`Pessoal (PF) ${fmt(pes)}`,cor:"#CC0000"}
+      ? {l:`Despesa ${VISOES.empresa.nome}`,v:fmt(emp),sub:`${VISOES.pessoal.nome} ${fmt(pes)}`,cor:"#CC0000"}
       : {l:"Maior categoria",v:cats[0]?fmt(cats[0].val):"—",sub:cats[0]?`${cats[0].cat} · ${pc(cats[0].val,total)}%`:"sem despesas",cor:VISOES[visao].cor},
     {l:"A executar (programado)",v:fmt(somaV(agend)),sub:`${agend.length} conta(s)`,cor:"#8A6A1F"},
   ];
@@ -804,6 +852,197 @@ function Relatorio({ mesKey, goPeriodo, visao }) {
   );
 }
 
+// ─── COMPONENTES DAS ETAPAS 1 E 2 ────────────────────────────────────────────
+function Modal({onClose, children}) {
+  return (
+    <div className="overlay" onClick={e=>{if(e.target===e.currentTarget)onClose();}}>
+      <div className="sheet"><div className="handle"/>{children}</div>
+    </div>
+  );
+}
+const ErrTxt = ({msg}) => msg ? <div style={{fontSize:11,color:"#B4483C",marginTop:4,fontWeight:700,fontFamily:"'Inter',sans-serif"}}>{msg}</div> : null;
+function CampoValor({label, digits, onChange, err, cor="#1A1A1A"}) {
+  return (
+    <div style={{marginBottom:16}}>
+      <label style={FL}>{label}</label>
+      <div style={{position:"relative"}}>
+        <span style={{position:"absolute",left:14,top:"50%",transform:"translateY(-50%)",fontSize:14,color:"#666666",fontWeight:700}}>R$</span>
+        <input style={{...INP(err),paddingLeft:40,fontSize:20,fontWeight:800,color:cor}} placeholder="0,00" inputMode="numeric"
+          value={digits?d2brl(digits):""} onChange={e=>onChange(e.target.value.replace(/\D/g,""))}/>
+      </div>
+      <ErrTxt msg={err}/>
+    </div>
+  );
+}
+function Chips({opcoes, valor, onChange}) {
+  return (
+    <div style={{display:"flex",gap:4,background:"#F0F0F0",borderRadius:10,padding:4,marginBottom:16,flexWrap:"wrap"}}>
+      {opcoes.map(([k,l,cor])=>(
+        <button key={k} type="button" onClick={()=>onChange(k)}
+          style={{flex:"1 1 0",minWidth:70,border:"none",borderRadius:8,padding:"9px 6px",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontSize:12.5,fontWeight:700,background:valor===k?(cor||"#1A1A1A"):"transparent",color:valor===k?"#fff":"#666"}}>{l}</button>
+      ))}
+    </div>
+  );
+}
+const SecTitulo = ({aberto, onClick, children, direita}) => (
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:20,marginBottom:10}}>
+    <div role="button" onClick={onClick} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"#888888",letterSpacing:"0.2em",textTransform:"uppercase",fontWeight:700,cursor:"pointer",userSelect:"none"}}>
+      <span>{children}</span>
+      <span style={{display:"inline-block",transform:aberto?"rotate(90deg)":"none",transition:"transform .15s",fontSize:9}}>▶</span>
+    </div>
+    {direita}
+  </div>
+);
+function Anel({pct, cor, size=88, centro}) {
+  const r=36, circ=2*Math.PI*r, p=Math.max(0,Math.min(pct,1));
+  return (
+    <div style={{position:"relative",width:size,height:size,flexShrink:0}}>
+      <svg width={size} height={size} viewBox="0 0 90 90">
+        <circle cx="45" cy="45" r={r} fill="none" stroke="#EEEEEE" strokeWidth="9"/>
+        <circle cx="45" cy="45" r={r} fill="none" stroke={cor} strokeWidth="9" strokeLinecap="round"
+          strokeDasharray={`${p*circ} ${circ}`} style={{transform:"rotate(-90deg)",transformOrigin:"50% 50%",transition:"stroke-dasharray .6s ease"}}/>
+      </svg>
+      <div style={{position:"absolute",inset:0,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center"}}>
+        {centro || <><div style={{fontSize:19,fontWeight:800,color:"#1A1A1A",lineHeight:1}}>{Math.round(pct*100)}%</div></>}
+      </div>
+    </div>
+  );
+}
+const MARCOS = [[0.25,"🥉","25%"],[0.5,"🥈","50%"],[0.75,"🥇","75%"],[1,"🏆","100%"]];
+function Medalhas({pct}) {
+  return (
+    <div style={{display:"flex",gap:6}}>
+      {MARCOS.map(([v,ic,l])=>{ const on=pct>=v; return (
+        <div key={l} title={l} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:2,padding:"6px 2px",borderRadius:10,background:on?"#FBF3E4":"#F5F5F5",border:`1px solid ${on?"#EAD9AE":"#EEEEEE"}`}}>
+          <span style={{fontSize:18,filter:on?"none":"grayscale(1)",opacity:on?1:0.35}}>{ic}</span>
+          <span style={{fontSize:9.5,fontWeight:800,color:on?"#8A6A1F":"#BBBBBB"}}>{l}</span>
+        </div>
+      );})}
+    </div>
+  );
+}
+function Prazo({p, m}) {
+  let txt, cor="#666666", fundo="#F0F0F0";
+  if (p.mensal) { txt = p.diasRest===0 ? "renova amanhã" : `renova em ${p.diasRest+1} dias`; }
+  else if (p.diasRest==null) txt = "sem prazo";
+  else if (p.diasRest<0) { txt = `atrasada há ${-p.diasRest} dia${p.diasRest===-1?"":"s"}`; cor="#B4483C"; fundo="#FBECEA"; }
+  else if (p.diasRest===0) { txt = "vence hoje"; cor="#B4483C"; fundo="#FBECEA"; }
+  else { txt = `faltam ${p.diasRest} dia${p.diasRest===1?"":"s"}`; if (p.diasRest<=7) { cor="#8A6A1F"; fundo="#FBF3E4"; } }
+  return <span style={{display:"inline-flex",alignItems:"center",gap:4,background:fundo,color:cor,borderRadius:20,padding:"3px 9px",fontSize:10.5,fontWeight:800,whiteSpace:"nowrap"}}>⏳ {txt}{!p.mensal&&m.prazo?` · ${f2(m.prazo)}`:""}</span>;
+}
+function CardMeta({m, p, onClick, onQtd, onEtapa}) {
+  const T = TIPOS_META[p.tipo], v = VISOES[m.centro||"empresa"], limite = p.tipo==="limite";
+  const corAnel = limite ? p.status.cor : p.pct>=1 ? "#00875A" : p.status.nivel===2 ? "#B4483C" : p.status.nivel===1 ? "#A6822E" : "#CC0000";
+  const etapas = p.tipo==="etapas" ? lerEtapas(m) : [];
+  const parar = e => e.stopPropagation();
+  return (
+    <div onClick={onClick} style={{background:"#fff",borderRadius:16,padding:"16px",boxShadow:"0 2px 10px #1A1A1A12",marginBottom:12,cursor:"pointer"}}>
+      <div style={{display:"flex",alignItems:"flex-start",gap:10,marginBottom:12}}>
+        <span style={{width:38,height:38,borderRadius:12,background:v.fundo,display:"flex",alignItems:"center",justifyContent:"center",fontSize:19,flexShrink:0}}>{T.icone}</span>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:15,fontWeight:800,color:"#1A1A1A",lineHeight:1.25}}>{m.nome}</div>
+          <div style={{display:"flex",gap:6,alignItems:"center",marginTop:4,flexWrap:"wrap"}}>
+            <span className="badge" style={{marginTop:0,background:v.fundo,color:v.cor,border:`1px solid ${v.cor}33`}}>{v.curto}</span>
+            <span style={{fontSize:10.5,color:"#888888",fontWeight:700}}>{GRUPOS_META[T.grupo].nome} · {T.nome}</span>
+          </div>
+        </div>
+        <span className="badge" style={{marginTop:0,background:p.status.fundo,color:p.status.cor,border:`1px solid ${p.status.cor}33`,whiteSpace:"nowrap"}}>{p.status.txt}</span>
+      </div>
+      <div style={{display:"flex",gap:14,alignItems:"center"}}>
+        <Anel pct={p.pct} cor={corAnel} centro={limite?<><div style={{fontSize:17,fontWeight:800,color:"#1A1A1A",lineHeight:1}}>{Math.round(p.pct*100)}%</div><div style={{fontSize:8.5,color:"#888888",fontWeight:700,marginTop:2}}>usado</div></>:null}/>
+        <div style={{flex:1,minWidth:0}}>
+          <div style={{fontSize:10,color:"#888888",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase"}}>{limite?"Gasto":"Atual"}</div>
+          <div style={{fontSize:21,fontWeight:800,color:"#1A1A1A",lineHeight:1.15}}>{fmtMeta(m,p.atual)}</div>
+          <div style={{fontSize:12,fontWeight:700,color:"#888888",marginTop:2}}>{limite?"limite":"alvo"} {fmtMeta(m,p.alvo)}</div>
+          <div style={{marginTop:8}}><Prazo p={p} m={m}/></div>
+        </div>
+      </div>
+      {p.dica&&<div style={{fontSize:11.5,fontWeight:700,color:p.pct>=1&&!limite?"#00704B":limite&&p.pct>1?"#B4483C":"#444",background:"#F7F7F7",borderRadius:10,padding:"8px 10px",marginTop:12}}>{p.dica}</div>}
+      {p.tipo==="quantidade"&&onQtd&&(
+        <div onClick={parar} style={{display:"flex",gap:8,marginTop:10}}>
+          {[-1,1].map(d=>(
+            <button key={d} onClick={()=>onQtd(m,d)} style={{flex:1,border:`2px solid ${d>0?"#00875A":"#E0E0E0"}`,background:d>0?"#E6F4EE":"#fff",color:d>0?"#00704B":"#666",borderRadius:10,padding:"9px",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>{d>0?"+ 1":"− 1"}</button>
+          ))}
+        </div>
+      )}
+      {etapas.length>0&&(
+        <div onClick={parar} style={{marginTop:10,display:"flex",flexDirection:"column",gap:4}}>
+          {etapas.map((e,i)=>(
+            <button key={i} onClick={()=>onEtapa&&onEtapa(m,i)} style={{display:"flex",alignItems:"center",gap:10,background:e.ok?"#E6F4EE":"#FAFAFA",border:`1px solid ${e.ok?"#B5DCCB":"#EEEEEE"}`,borderRadius:10,padding:"8px 10px",cursor:onEtapa?"pointer":"default",textAlign:"left",fontFamily:"'Inter',sans-serif"}}>
+              <span style={{width:20,height:20,borderRadius:6,border:`2px solid ${e.ok?"#00875A":"#CCCCCC"}`,background:e.ok?"#00875A":"#fff",color:"#fff",fontSize:12,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{e.ok?"✓":""}</span>
+              <span style={{fontSize:13,fontWeight:700,color:e.ok?"#00704B":"#1A1A1A",textDecoration:e.ok?"line-through":"none"}}>{e.t}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {!limite&&<div style={{marginTop:12}}><Medalhas pct={p.pct}/></div>}
+    </div>
+  );
+}
+function CardRealizada({m, p, onClick}) {
+  const T = TIPOS_META[p.tipo], v = VISOES[m.centro||"empresa"];
+  const quando = m.concluida_em || null;
+  const antes = quando && m.prazo ? diasEntre(quando, m.prazo) : null;
+  return (
+    <div onClick={onClick} style={{display:"flex",alignItems:"center",gap:12,background:"linear-gradient(135deg,#FFFDF5,#FBF3E4)",border:"1.5px solid #EAD9AE",borderRadius:16,padding:"14px 16px",marginBottom:10,cursor:"pointer"}}>
+      <span style={{fontSize:30}}>🏆</span>
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:14.5,fontWeight:800,color:"#1A1A1A"}}>{m.nome}</div>
+        <div style={{fontSize:11,color:"#8A6A1F",fontWeight:700,marginTop:3}}>{T.icone} {T.nome} · {v.curto} · {fmtMeta(m,p.alvo)}</div>
+        <div style={{fontSize:10.5,color:"#888888",fontWeight:600,marginTop:3}}>
+          {quando?`Concluída em ${f2(quando)}`:"Alvo atingido"}{antes!=null&&antes>0?` · ${antes} dia${antes>1?"s":""} antes do prazo 🔥`:""}
+        </div>
+      </div>
+    </div>
+  );
+}
+function CardPrevisao({c, p, dias, destaque}) {
+  const v = VISOES[c];
+  const corV = x => x>=0 ? "#00875A" : "#B4483C";
+  const L = ({l, val, cor, nota}) => (
+    <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",padding:"5px 0",gap:8}}>
+      <span style={{fontSize:12,color:"#666666",fontWeight:600}}>{l}{nota&&<span style={{fontSize:9.5,color:"#A6822E",fontWeight:700}}> · {nota}</span>}</span>
+      <span style={{fontSize:13,fontWeight:800,color:cor||"#1A1A1A",whiteSpace:"nowrap"}}>{val}</span>
+    </div>
+  );
+  return (
+    <div style={{background:"#fff",borderRadius:14,padding:"12px 16px",boxShadow:"0 2px 8px #1A1A1A10",marginBottom:10,border:destaque?"2px solid #1A1A1A":"none"}}>
+      <div style={{fontSize:10,fontWeight:800,letterSpacing:"0.12em",textTransform:"uppercase",color:v.cor,marginBottom:4}}>{v.nome}</div>
+      <L l="Saldo registrado hoje" val={fmt(p.saldoHoje)} cor={corV(p.saldoHoje)}/>
+      <L l={`Contas programadas (${p.nProg})`} val={`− ${fmt(p.saidas)}`} cor="#8A3A30"/>
+      {p.entradasProg>0&&<L l={`Receitas a receber (${p.nRecProg})`} val={`+ ${fmt(p.entradasProg)}`} cor="#00704B"/>}
+      {p.transf!==0&&<L l="Transferências programadas" val={`${p.transf>0?"+":"−"} ${fmt(Math.abs(p.transf))}`}/>}
+      <div style={{borderTop:"1px solid #EEEEEE",margin:"4px 0"}}/>
+      <L l={`Em ${dias} dias, só com o já lançado`} val={fmt(p.semEstimativa)} cor={corV(p.semEstimativa)}/>
+      <L l="Entradas estimadas" nota="estimativa" val={`+ ${fmt(p.entradasEst)}`} cor="#00704B"/>
+      <L l={`Em ${dias} dias, com estimativa`} nota="estimativa" val={fmt(p.comEstimativa)} cor={corV(p.comEstimativa)}/>
+      {p.baseDias>0&&<div style={{fontSize:9.5,color:"#888888",marginTop:4,fontWeight:600}}>Estimativa = média diária de receita dos últimos {p.baseDias} dia{p.baseDias>1?"s":""}, descontando o que já está a receber.</div>}
+    </div>
+  );
+}
+function PainelAlertas({alertas, onClose}) {
+  const NIV = [{t:"Info",c:"#2F65AC",f:"#EEF3FB"},{t:"Atenção",c:"#A6822E",f:"#FBF3E4"},{t:"Crítico",c:"#B4483C",f:"#FBECEA"}];
+  return (
+    <Modal onClose={onClose}>
+      <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A",marginBottom:2}}>Alertas</div>
+      <div style={{fontSize:11,color:"#888888",marginBottom:14}}>{alertas.length?`${alertas.length} ponto${alertas.length>1?"s":""} para olhar agora`:"Nada fora do esperado agora."}</div>
+      {alertas.length===0&&<div style={{textAlign:"center",padding:"18px 0",fontSize:32}}>✅</div>}
+      {alertas.map((a,i)=>{ const n=NIV[a.nivel]; return (
+        <div key={i} style={{background:n.f,border:`1px solid ${n.c}33`,borderRadius:12,padding:"12px 14px",marginBottom:8}}>
+          <div style={{display:"flex",gap:8,alignItems:"flex-start",marginBottom:6}}>
+            <span className="badge" style={{marginTop:1,background:n.c,color:"#fff",border:"none"}}>{n.t}</span>
+            <span style={{fontSize:13,fontWeight:800,color:"#1A1A1A",lineHeight:1.3}}>{a.titulo}</span>
+          </div>
+          <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Motivo:</b> {a.motivo}</div>
+          <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Impacto:</b> {a.impacto}</div>
+          <div style={{fontSize:11.5,color:n.c,lineHeight:1.45,fontWeight:700,marginTop:2}}>→ {a.acao}</div>
+        </div>
+      );})}
+      <button className="btn-ghost" onClick={onClose}>Fechar</button>
+    </Modal>
+  );
+}
+
 const INIT_STATE = Object.fromEntries(MESES.map(m=>[m.mes,[]]));
 const INIT_RECEITAS = Object.fromEntries(MESES.map(m=>[m.mes,[]]));
 
@@ -821,7 +1060,7 @@ export default function App() {
   const setVisao = v => { setVisaoSt(v); setMenuVisao(false); try { localStorage.setItem(VISAO_KEY,v); } catch {} };
   const nv = useCallback(x=>naVisao(visao,x),[visao]);
   const centroPadrao = visao==="ambos" ? "empresa" : visao;   // novo lançamento já abre no centro da visão
-  const rotVisao = visao==="ambos" ? " · PJ + PF" : ` · ${VISOES[visao].sig}`;
+  const rotVisao = ` · ${VISOES[visao].nome}`;
   const [showPicker,setShowPicker]         = useState(false);
   const [showForm,setShowForm]             = useState(false);
   const [showFormReceita,setShowFormReceita]=useState(false);
@@ -855,6 +1094,7 @@ export default function App() {
   const [metas,setMetas]                   = useState([]);
   const [formTransf,setFormTransf]         = useState(null);   // {item?, f:{...}}
   const [formMeta,setFormMeta]             = useState(null);
+  const [metaTab,setMetaTab]               = useState("andamento");   // andamento | realizadas | nova
   const [formCat,setFormCat]               = useState(null);
   const [delGen,setDelGen]                 = useState(null);   // {kind:"transf"|"meta", item}
   const [acaoGen,setAcaoGen]               = useState(null);
@@ -870,7 +1110,10 @@ export default function App() {
   const items     = useMemo(()=>(allItems[mesAtual.mes]||[]).filter(nv),[allItems,mesAtual.mes,nv]);
   const itemsAnt  = useMemo(()=>mesAnt?(allItems[mesAnt.mes]||[]).filter(nv):[],[allItems,mesAnt,nv]);
   const receitasTodas = useMemo(()=>(allReceitas[mesAtual.mes]||[]).filter(nv),[allReceitas,mesAtual.mes,nv]);
-  const receitas  = useMemo(()=>receitasTodas.filter(r=>!r.excluido),[receitasTodas]);
+  const receitasAtivas = useMemo(()=>receitasTodas.filter(r=>!r.excluido),[receitasTodas]);
+  const receitas  = useMemo(()=>receitasAtivas.filter(r=>!recProg(r)),[receitasAtivas]);       // entram no caixa
+  const receitasProg = useMemo(()=>receitasAtivas.filter(recProg),[receitasAtivas]);          // a receber
+  const totalReceitaProg = receitasProg.reduce((s,r)=>s+r.valor,0);
 
   // Dados de todo o período (início até +3 meses): previsão, metas, alertas e transferências
   const loadGlobal = useCallback(async () => {
@@ -896,7 +1139,7 @@ export default function App() {
     if (!silent) { setLoading(false); loadGlobal(); }
   }, [mesAtual.mes, mesAnt, loadGlobal]);
 
-  const modalNovo = !!formTransf || !!formMeta || !!formCat || !!delGen || !!acaoGen || showAlertas;
+  const modalNovo = !!formTransf || !!formCat || !!delGen || !!acaoGen || showAlertas;
   useEffect(() => { load(); }, [load]);
   useEffect(() => {
     if (showForm || showFormReceita || editItem || delItem || delReceita || editReceita || acaoItem || acaoReceita || ctx || modalNovo) return;
@@ -1011,7 +1254,7 @@ export default function App() {
     showToast((form.recorrente ? `✓ Registrado + ${extras} recorrência${extras===1?"":"s"}` : "✓ Lançamento registrado")+foraDaVisao(item.centro));
   };
   // Aviso quando o registro vai para o outro centro e some da visão atual
-  const foraDaVisao = c => visao!=="ambos" && (c||"empresa")!==visao ? ` na ${VISOES[c||"empresa"].sig}` : "";
+  const foraDaVisao = c => visao!=="ambos" && (c||"empresa")!==visao ? ` · ${VISOES[c||"empresa"].nome}` : "";
   const lancarReceita=async ()=>{
     const e=validarReceita(formReceita);
     if(Object.keys(e).length){setErroReceita(e);return;}
@@ -1052,6 +1295,7 @@ export default function App() {
       setShowForm(false);setShowFormReceita(false);setEditItem(null);setDelItem(null);setMotivoExc("");setMotivoErr(false);
       setDelReceita(null);setEditReceita(null);setAcaoItem(null);setAcaoReceita(null);setPopProg(false);setCtx(null);
       setShowPicker(false);setMenuVisao(false);
+      setFormTransf(null);setFormMeta(null);setFormCat(null);setDelGen(null);setAcaoGen(null);setShowAlertas(false);
     };
     window.addEventListener("keydown",h);
     return ()=>window.removeEventListener("keydown",h);
@@ -1059,6 +1303,11 @@ export default function App() {
   const programarDespesa=()=>{
     setPopProg(false);setProgMode(true);
     setForm({...emptyForm(),centro:centroPadrao,data:amanha()});setErro({});setShowForm(true);
+  };
+  const receberHoje=async r=>{
+    const h=hoje(), ate=r.data_ate&&r.data_ate>h?r.data_ate:h;
+    const ok = await rcPatch(r.id, { data_de:h, semana:h, data_ate:ate, mes:h.slice(0,7) });
+    if(ok){ load(); showToast("✓ Marcada como recebida"); }
   };
   const provisionar=async t=>{
     const ok = await sbPatch(t.id, { data: hoje(), mes: hoje().slice(0,7) });
@@ -1093,53 +1342,75 @@ export default function App() {
     const ok = ed ? await tbPatch("transferencias", ed.id, body)
                   : !!(await tbPost("transferencias", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"" }));
     setFormTransf(null);
-    if(ok){ load(); showToast(ed?"✓ Transferência atualizada":"✓ Transferência PJ → PF registrada"); }
+    if(ok){ load(); showToast(ed?"✓ Transferência atualizada":"✓ Transferência registrada"); }
     else showToast("⚠ Não salvou — falta criar a tabela no Supabase");
   };
   const executarTransf = async t => { if(await tbPatch("transferencias", t.id, { data:hoje(), mes:hoje().slice(0,7) })){ load(); showToast("✓ Movido para executado"); } };
 
   // ─── Metas ───
-  const novaMeta = () => { setErroGen({}); setFormMeta({ f:{ nome:"", descricao:"", tipo:"faturamento", centro:centroPadrao, categoria:"", iniDigits:"", alvoDigits:"", atualDigits:"", data_inicio:hoje(), prazo:"" } }); };
-  const editarMeta = m => { setErroGen({}); setFormMeta({ item:m, f:{ nome:m.nome||"", descricao:m.descricao||"", tipo:m.tipo||"manual", centro:m.centro||"empresa", categoria:m.categoria||"",
-    iniDigits:m.valor_inicial?float2d(Number(m.valor_inicial)):"", alvoDigits:m.valor_alvo?float2d(Number(m.valor_alvo)):"", atualDigits:m.valor_atual?float2d(Number(m.valor_atual)):"", data_inicio:m.data_inicio||hoje(), prazo:m.prazo||"" } }); };
+  const baseMeta = grupo => ({ grupo, tipo: grupo==="financeira"?"faturamento":"quantidade", nome:"", descricao:"", centro:centroPadrao, categoria:"", unidade:"",
+    iniDigits:"", alvoDigits:"", atualDigits:"", alvoQtd:"", atualQtd:"", etapas:[], novaEtapa:"", data_inicio:hoje(), prazo:"" });
+  const novaMeta = grupo => { setErroGen({}); setFormMeta({ f: baseMeta(grupo) }); };
+  const editarMeta = m => {
+    const t=tipoMeta(m.tipo), g=TIPOS_META[t].grupo, n=x=>Number(x)||0;
+    setErroGen({}); setMetaTab("nova");
+    setFormMeta({ item:m, f:{ ...baseMeta(g), tipo:t, nome:m.nome||"", descricao:m.descricao||"", centro:m.centro||"empresa", categoria:m.categoria||"", unidade:m.unidade||"",
+      iniDigits:n(m.valor_inicial)?float2d(n(m.valor_inicial)):"", alvoDigits:g==="financeira"&&n(m.valor_alvo)?float2d(n(m.valor_alvo)):"", atualDigits:t==="valor"&&n(m.valor_atual)?float2d(n(m.valor_atual)):"",
+      alvoQtd:t==="quantidade"?String(n(m.valor_alvo)):"", atualQtd:t==="quantidade"?String(n(m.valor_atual)):"", etapas:lerEtapas(m), data_inicio:m.data_inicio||hoje(), prazo:m.prazo||"" } });
+  };
   const salvarMeta = async () => {
-    const f=formMeta.f, e={};
-    if(!f.nome.trim()) e.nome="Campo obrigatório";
-    if(!f.alvoDigits||parseInt(f.alvoDigits)===0) e.alvo="Informe o valor-alvo";
-    if(f.tipo==="acumular"&&!f.data_inicio) e.data_inicio="Informe a data de início";
-    if(f.prazo&&f.data_inicio&&f.prazo<f.data_inicio) e.prazo="O prazo deve ser depois do início";
+    const f=formMeta.f, T=TIPOS_META[f.tipo], e={};
+    if(!f.nome.trim()) e.nome="Dê um nome para a meta";
+    if(T.grupo==="financeira" && (!f.alvoDigits||parseInt(f.alvoDigits)===0)) e.alvo="Informe o valor";
+    if(f.tipo==="quantidade" && !(parseInt(f.alvoQtd)>0)) e.alvoQtd="Informe a quantidade-alvo";
+    if(f.tipo==="etapas" && f.etapas.length===0) e.etapas="Adicione pelo menos uma etapa";
+    if(!T.mensal && !f.prazo) e.prazo="Defina um prazo";
+    if(f.tipo==="acumular" && !f.data_inicio) e.data_inicio="Informe o início";
+    if(f.prazo && f.data_inicio && f.prazo<f.data_inicio) e.prazo="O prazo deve ser depois do início";
     if(Object.keys(e).length){ setErroGen(e); return; }
-    const body = { nome:f.nome.trim(), descricao:f.descricao.trim(), tipo:f.tipo, centro:f.centro, categoria:f.tipo==="limite"&&f.categoria?f.categoria:null,
-      valor_inicial:d2float(f.iniDigits), valor_alvo:d2float(f.alvoDigits), valor_atual:d2float(f.atualDigits), data_inicio:f.data_inicio||null, prazo:f.prazo||null };
+    const alvo = T.grupo==="financeira" ? d2float(f.alvoDigits) : f.tipo==="quantidade" ? parseInt(f.alvoQtd,10) : f.etapas.length;
+    const atual = f.tipo==="valor" ? d2float(f.atualDigits) : f.tipo==="quantidade" ? (parseInt(f.atualQtd,10)||0) : 0;
+    const body = { nome:f.nome.trim(), descricao:f.descricao.trim(), grupo:T.grupo, tipo:f.tipo, centro:f.centro,
+      categoria: f.tipo==="limite"&&f.categoria ? f.categoria : null, unidade: f.tipo==="quantidade" ? f.unidade.trim() : null,
+      valor_inicial: f.tipo==="acumular" ? d2float(f.iniDigits) : 0, valor_alvo: alvo, valor_atual: atual,
+      etapas: f.tipo==="etapas" ? f.etapas.map(x=>({t:x.t,ok:!!x.ok})) : null,
+      data_inicio: T.mensal ? null : (f.data_inicio||null), prazo: T.mensal ? null : (f.prazo||null) };
     const ed = formMeta.item;
+    if (!T.auto && alvo>0 && (f.tipo==="etapas" ? f.etapas.every(x=>x.ok) : atual>=alvo) && !(ed&&ed.concluida_em)) body.concluida_em = hoje();
     const ok = ed ? await tbPatch("metas", ed.id, body)
-                  : !!(await tbPost("metas", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"", criado_em:new Date().toISOString() }));
-    setFormMeta(null);
-    if(ok){ loadGlobal(); showToast(ed?"✓ Meta atualizada":"✓ Meta criada"); }
+                  : !!(await tbPost("metas", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"", concluida_em:null, criado_em:new Date().toISOString() }));
+    if(ok){ setFormMeta(null); setMetaTab("andamento"); loadGlobal(); showToast(ed?"✓ Meta atualizada":"🎯 Meta criada — bora!"); }
     else showToast("⚠ Não salvou — falta criar a tabela no Supabase");
   };
+  // Atualização rápida no próprio cartão (otimista: muda na tela e grava em seguida)
+  const patchMetaLocal = async (m, body, msgFeita) => {
+    const novo = { ...m, ...body };
+    setMetas(ms => ms.map(x => x.id===m.id ? novo : x));
+    const ok = await tbPatch("metas", m.id, body);
+    if(!ok){ setMetas(ms => ms.map(x => x.id===m.id ? m : x)); showToast("⚠ Não salvou"); return; }
+    const depois = progMeta(novo, glob);
+    if(!m.concluida_em && !depois.mensal && depois.pct>=1){
+      await tbPatch("metas", m.id, { concluida_em: hoje() });
+      setMetas(ms => ms.map(x => x.id===m.id ? { ...novo, concluida_em: hoje() } : x));
+      showToast("🏆 Meta realizada! Parabéns!");
+    } else if (msgFeita) showToast(msgFeita);
+  };
+  const ajustarQtd = (m, d) => { const v = Math.max(0, (Number(m.valor_atual)||0) + d); patchMetaLocal(m, { valor_atual: v }); };
+  const alternarEtapa = (m, i) => { const e = lerEtapas(m).map((x,k)=> k===i ? { ...x, ok:!x.ok } : x); patchMetaLocal(m, { etapas: e }, e[i].ok ? "✓ Etapa concluída" : null); };
+  const concluirMeta = async m => { if(await tbPatch("metas", m.id, { concluida_em: hoje() })){ loadGlobal(); setMetaTab("realizadas"); showToast("🏆 Meta realizada! Parabéns!"); } };
+  const reabrirMeta  = async m => { if(await tbPatch("metas", m.id, { concluida_em: null })){ loadGlobal(); setMetaTab("andamento"); showToast("Meta reaberta"); } };
 
   // ─── Categorias (inserir nova / editar cor e orçamento) ───
-  const novaCat = () => { setErroGen({}); setFormCat({ f:{ nome:"", centro:centroPadrao, cor:CORES_CAT[0], orcDigits:"" } }); };
-  const editarCat = row => { setErroGen({}); setFormCat({ item:row, f:{ nome:row.nome, centro:row.centro||"ambos", cor:row.cor||CORES_CAT[0], orcDigits:row.orcamento?float2d(Number(row.orcamento)):"" } }); };
+  const novaCat = () => { setErroGen({}); setFormCat({ f:{ nome:"", centro:centroPadrao } }); };
   const salvarCat = async () => {
-    const f=formCat.f, ed=formCat.item, e={};
+    const f=formCat.f, e={};
     const nome=f.nome.trim().replace(/\s+/g," ");
-    if(!ed){
-      if(!nome) e.nome="Campo obrigatório";
-      else if(CAT_ROWS.some(r=>normC(r.nome)===normC(nome)&&(r.centro||"ambos")===f.centro)) e.nome="Já existe essa categoria nesse centro";
-    }
+    if(!nome) e.nome="Campo obrigatório";
+    else if(CAT_ROWS.some(r=>normC(r.nome)===normC(nome)&&(r.centro||"ambos")===f.centro)) e.nome="Já existe essa categoria nesse centro";
     if(Object.keys(e).length){ setErroGen(e); return; }
-    const orc = f.orcDigits ? d2float(f.orcDigits) : null;
-    let ok;
-    if(ed){
-      ok = await tbPatch("categorias", ed.id, { cor:f.cor, orcamento:orc }) || await tbPatch("categorias", ed.id, { cor:f.cor });
-    } else {
-      const body = { cliente_id:CID, nome, cor:f.cor, centro:f.centro==="ambos"?null:f.centro };
-      ok = !!(await tbPost("categorias", { ...body, orcamento:orc })) || !!(await tbPost("categorias", body));
-    }
+    const ok = !!(await tbPost("categorias", { cliente_id:CID, nome, cor:corLivre(), centro:f.centro==="ambos"?null:f.centro }));
     setFormCat(null);
-    if(ok){ await carregarCats(); showToast(ed?"✓ Categoria atualizada":`✓ Categoria "${nome}" criada`); }
+    if(ok){ await carregarCats(); showToast(`✓ Categoria "${nome}" criada`); }
     else showToast("⚠ Não salvou — verifique a permissão da tabela categorias");
   };
 
@@ -1159,7 +1430,7 @@ export default function App() {
     if(ok){ load(); showToast("Receita excluída"); }
   };
 
-  const anyModal=showForm||showFormReceita||!!editItem||!!delItem||!!delReceita||!!editReceita||popProg||!!acaoItem||!!acaoReceita;
+  const anyModal=showForm||showFormReceita||!!editItem||!!delItem||!!delReceita||!!editReceita||popProg||!!acaoItem||!!acaoReceita||modalNovo;
   const card={background:"#fff",borderRadius:14,padding:"4px 16px",boxShadow:"0 2px 8px #1A1A1A10",marginBottom:12};
   const rowDiv=last=>({padding:"13px 0",borderBottom:last?"none":"1px solid #EEEEEE",display:"flex",justifyContent:"space-between",alignItems:"center",gap:10});
 
@@ -1187,7 +1458,7 @@ export default function App() {
           <div style={{display:"flex",gap:6,alignItems:"center",marginTop:2,flexWrap:"wrap"}}>
             <span style={{fontSize:11,color:"#888888",fontFamily:"'Inter',sans-serif"}}>{fmtDate(t.data)} · {t.categoria} · {t.meio}</span>
             {isLiq(t)&&!t.excluido&&<span className="badge" style={{background:"#FBF3E4",color:"#8A6A1F",border:"1px solid #EAD9AE"}}>Liquidação · não conta</span>}
-            {t.centro&&!t.excluido&&<span className="badge" style={{background:t.centro==="pessoal"?"#EEF3FB":"#FDECEC",color:t.centro==="pessoal"?"#2F65AC":"#CC0000",border:`1px solid ${t.centro==="pessoal"?"#C9D8EE":"#F2C4C4"}`}}>{t.centro==="pessoal"?"Pessoal":"Empresa"}</span>}
+            {t.centro&&!t.excluido&&<span className="badge" style={{background:t.centro==="pessoal"?"#EEF3FB":"#FDECEC",color:t.centro==="pessoal"?"#2F65AC":"#CC0000",border:`1px solid ${t.centro==="pessoal"?"#C9D8EE":"#F2C4C4"}`}}>{t.centro==="pessoal"?VISOES.pessoal.curto:VISOES.empresa.curto}</span>}
           </div>
           {t.obs&&!t.excluido&&<div style={{fontSize:11,color:"#888888",marginTop:1,fontStyle:"italic",fontFamily:"'Inter',sans-serif"}}>{t.obs}</div>}
           {t.excluido&&<span className="badge" style={{background:"#FBECEA",color:"#B4483C",border:"1px solid #EBBDB6"}}>Valor excluído da soma de valores</span>}
@@ -1226,7 +1497,10 @@ export default function App() {
         </div>
       </div>
       <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
-        <div style={{fontSize:15,fontWeight:800,color:exc?"#bbb":"#00875A",fontFamily:"'Inter',sans-serif"}}>{fmt(r.valor)}</div>
+        <div style={{textAlign:"right"}}>
+          <div style={{fontSize:15,fontWeight:800,color:exc?"#bbb":recProg(r)?"#7FB8A0":"#00875A",fontFamily:"'Inter',sans-serif"}}>{fmt(r.valor)}</div>
+          {!exc&&recProg(r)&&<div style={{fontSize:9.5,fontWeight:700,color:"#00704B",marginTop:2,whiteSpace:"nowrap"}}>A receber · {fmtDate(dataRec(r))}</div>}
+        </div>
       </div>
     </div>
     );
@@ -1250,13 +1524,18 @@ export default function App() {
               )}
             </div>
           </div>
+          <button onClick={()=>setShowAlertas(true)} title="Alertas"
+            style={{position:"relative",width:40,height:40,borderRadius:"50%",border:"2px solid #E0E0E0",background:"#fff",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,color:"#1A1A1A"}}>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+            {alertas.length>0&&<span style={{position:"absolute",top:-4,right:-4,minWidth:18,height:18,borderRadius:9,padding:"0 4px",background:nivelAlerta>=2?"#B4483C":"#A6822E",color:"#fff",fontSize:10,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center",border:"2px solid #fff"}}>{alertas.length}</span>}
+          </button>
           <div style={{position:"relative",flexShrink:0}}>
             <button onClick={()=>setMenuVisao(o=>!o)} title="Trocar visualização"
               style={{display:"flex",alignItems:"center",gap:8,background:VISOES[visao].fundo,border:`2px solid ${VISOES[visao].cor}33`,borderRadius:50,padding:"4px 10px 4px 4px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
               <span style={{width:32,height:32,borderRadius:"50%",background:VISOES[visao].cor,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
                 <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4.4 3.6-8 8-8s8 3.6 8 8"/></svg>
               </span>
-              <span style={{fontSize:12,fontWeight:800,color:VISOES[visao].cor,letterSpacing:"0.04em",whiteSpace:"nowrap"}}>{VISOES[visao].sig}</span>
+              <span style={{fontSize:12,fontWeight:800,color:VISOES[visao].cor,letterSpacing:"0.02em",whiteSpace:"nowrap"}}><span className="so-pc">{VISOES[visao].nome}</span><span className="so-cel">{VISOES[visao].curto}</span></span>
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke={VISOES[visao].cor} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
             </button>
             {menuVisao&&(
@@ -1269,7 +1548,7 @@ export default function App() {
                     return (
                       <button key={k} onClick={()=>setVisao(k)}
                         style={{display:"flex",alignItems:"center",gap:10,width:"100%",background:at?v.fundo:"none",border:"none",borderRadius:10,padding:"10px",cursor:"pointer",textAlign:"left",fontFamily:"'Inter',sans-serif"}}>
-                        <span style={{minWidth:46,textAlign:"center",background:v.cor,color:"#fff",borderRadius:8,padding:"5px 6px",fontSize:11,fontWeight:800}}>{v.sig}</span>
+                        <span style={{width:32,height:32,borderRadius:"50%",display:"flex",alignItems:"center",justifyContent:"center",background:v.cor,color:"#fff",fontSize:13,fontWeight:800,flexShrink:0}}>{v.ini}</span>
                         <span style={{flex:1,minWidth:0}}>
                           <span style={{display:"block",fontSize:13,fontWeight:800,color:"#1A1A1A"}}>{v.nome}</span>
                           <span style={{display:"block",fontSize:10.5,color:"#888888",fontWeight:600,marginTop:1}}>{v.desc}</span>
@@ -1297,13 +1576,13 @@ export default function App() {
           <button className="arrow-btn" disabled={mesIdx===MESES.length-1} onClick={()=>goMes(1)}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
           </button>
-          <div style={{position:"absolute",right:0,display:"flex",gap:4}}>
+          <div className="badge-mes" style={{position:"absolute",right:0,display:"flex",gap:4}}>
             {isFechado&&<span className="badge" style={{background:"#F2F1EC",color:"#666666",border:"1px solid #E0E0E0"}}>Fechado</span>}
             {!isFechado&&items.length>0&&<span className="badge" style={{background:"#FBF3E4",color:"#A6822E",border:"1px solid #EAD9AE"}}>Parcial</span>}
           </div>
         </div>
         <nav className="navtabs" style={{display:"flex",marginTop:2,overflowX:"auto"}}>
-          {[["caixa","Caixa"],["inicio","Despesa"],["categorias","Categorias"],["historico","Histórico"],["relatorio","Relatório"]].map(([v,l])=>(
+          {[["caixa","Caixa"],["inicio","Despesa"],["categorias","Categorias"],["metas","Metas"],["historico","Histórico"],["relatorio","Relatório"]].map(([v,l])=>(
             <button key={v} className="tab" onClick={()=>setView(v)}
               style={{flex:"1 0 auto",whiteSpace:"nowrap",background:"none",border:"none",borderBottom:view===v?"2.5px solid #CC0000":"2.5px solid transparent",color:view===v?"#CC0000":"#888888",padding:"10px 5px",fontSize:10,letterSpacing:"0.02em",textTransform:"uppercase",cursor:"pointer",fontFamily:"'Inter',sans-serif",fontWeight:800,transition:"all .2s"}}>
               {l}
@@ -1313,6 +1592,16 @@ export default function App() {
       </div>
 
       <div style={{padding:"20px 16px 120px"}}>
+        {(()=>{ const a=alertas.find(x=>x.hoje); return a&&(
+          <div role="button" onClick={()=>setShowAlertas(true)} style={{display:"flex",alignItems:"center",gap:10,background:"#FBECEA",border:"1.5px solid #B4483C",borderRadius:12,padding:"11px 14px",marginBottom:14,cursor:"pointer"}}>
+            <span style={{fontSize:18}}>⏰</span>
+            <div style={{flex:1,minWidth:0}}>
+              <div style={{fontSize:13,fontWeight:800,color:"#8A3A30"}}>{a.titulo} · {a.impacto.replace(" vencendo hoje","")}</div>
+              <div style={{fontSize:11,color:"#8A3A30",fontWeight:600,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{a.motivo}</div>
+            </div>
+            <span style={{color:"#8A3A30",fontSize:16}}>›</span>
+          </div>
+        );})()}
         {view==="inicio"&&(
           <>
             <div style={{background:"#fff",borderRadius:16,padding:"24px 20px",marginBottom:14,boxShadow:"0 2px 12px #1A1A1A10"}}>
@@ -1335,7 +1624,7 @@ export default function App() {
               </div>
             </div>
             {visao==="ambos"&&total>0&&<div style={{...card,padding:"14px 16px"}}>
-              {[["Empresa (PJ)","empresa","#CC0000"],["Pessoal (PF)","pessoal","#2F65AC"]].map(([l,k,c],i)=>{
+              {["empresa","pessoal"].map(k=>[VISOES[k].nome,k,VISOES[k].cor]).map(([l,k,c],i)=>{
                 const v=contaveis.filter(t=>(t.centro||"empresa")===k).reduce((s,t)=>s+t.valor,0);
                 return <div key={k} style={{marginTop:i?12:0}}>
                   <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
@@ -1372,25 +1661,46 @@ export default function App() {
           <>
             <div style={{background:"#fff",borderRadius:16,padding:"20px",marginBottom:14,boxShadow:"0 2px 12px #1A1A1A10"}}>
               <div style={{fontSize:11,letterSpacing:"0.15em",color:"#888888",textTransform:"uppercase",marginBottom:12,fontWeight:700}}>Fluxo de Caixa — {mesAtual.label}{rotVisao}</div>
-              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
+              <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10,marginBottom:14}}>
                 <div style={{background:"#E6F4EE",borderRadius:12,padding:"14px",border:"1px solid #B5DCCB"}}>
                   <div style={{fontSize:9,letterSpacing:"0.15em",color:"#00704B",textTransform:"uppercase",fontWeight:800,marginBottom:4}}>Receita</div>
-                  <div style={{fontSize:22,fontWeight:800,color:"#00704B",lineHeight:1,fontFamily:"'Inter',sans-serif"}}>{fmt(totalReceita)}</div>
-                  <div style={{fontSize:10,color:"#666666",marginTop:4,fontWeight:600}}>{receitas.length} entrada(s)</div>
+                  <div className="kpi-v" style={{fontWeight:800,color:"#00704B",lineHeight:1,fontFamily:"'Inter',sans-serif"}}>{fmt(totalReceita)}</div>
+                  <div style={{fontSize:10,color:"#666666",marginTop:4,fontWeight:600}}>{receitas.length} entrada(s){receitasProg.length>0&&<span style={{color:"#00704B"}}> · + {fmt(totalReceitaProg)} a receber</span>}</div>
                 </div>
                 <div style={{background:"#FBECEA",borderRadius:12,padding:"14px",border:"1px solid #EBBDB6"}}>
                   <div style={{fontSize:9,letterSpacing:"0.15em",color:"#8A3A30",textTransform:"uppercase",fontWeight:800,marginBottom:4}}>Despesa</div>
-                  <div style={{fontSize:22,fontWeight:800,color:"#8A3A30",lineHeight:1,fontFamily:"'Inter',sans-serif"}}>{fmt(total)}</div>
+                  <div className="kpi-v" style={{fontWeight:800,color:"#8A3A30",lineHeight:1,fontFamily:"'Inter',sans-serif"}}>{fmt(total)}</div>
                   <div style={{fontSize:10,color:"#666666",marginTop:4,fontWeight:600}}>{contaveis.length} saída(s)</div>
                 </div>
               </div>
+              {totalTransf>0&&(
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,background:"#F5F5F5",border:"1px solid #E0E0E0",borderRadius:12,padding:"10px 14px",marginBottom:14}}>
+                  <div>
+                    <div style={{fontSize:9,letterSpacing:"0.15em",color:"#666666",textTransform:"uppercase",fontWeight:800}}>{visao==="empresa"?"Transferido para o Isaque":visao==="pessoal"?"Recebido da Pico Barbershop":"Transferências Pico → Isaque"}</div>
+                    <div style={{fontSize:10,color:"#888888",marginTop:2,fontWeight:600}}>{visao==="ambos"?"não altera Ambos (sai da barbearia e entra no Isaque)":"pró-labore e retiradas"}</div>
+                  </div>
+                  <div style={{fontSize:17,fontWeight:800,color:visao==="empresa"?"#8A3A30":visao==="pessoal"?"#00704B":"#1A1A1A",whiteSpace:"nowrap"}}>{visao==="empresa"?"− ":visao==="pessoal"?"+ ":""}{fmt(totalTransf)}</div>
+                </div>
+              )}
               <div style={{background:saldo>=0?"#E6F4EE":"#FBF3E4",borderRadius:12,padding:"16px 18px",border:`2px solid ${saldo>=0?"#00875A":"#A6822E"}`}}>
                 <div style={{fontSize:10,letterSpacing:"0.15em",color:saldo>=0?"#00875A":"#8A6A1F",textTransform:"uppercase",fontWeight:800,marginBottom:4}}>Saldo do Mês</div>
                 <div style={{display:"flex",alignItems:"baseline",gap:10}}>
                   <div style={{fontSize:28,fontWeight:800,color:saldo>=0?"#00875A":"#8A6A1F",lineHeight:1,fontFamily:"'Inter',sans-serif"}}>{fmt(saldo)}</div>
                   <div style={{fontSize:11,color:"#666666",fontWeight:700}}>{saldo>=0?"positivo":"negativo"}</div>
                 </div>
+                {visao==="ambos"&&(
+                  <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginTop:12}}>
+                    {["empresa","pessoal"].map(c=>(
+                      <div key={c} style={{background:"#fff",borderRadius:10,padding:"9px 12px",border:`1px solid ${VISOES[c].cor}33`}}>
+                        <div style={{fontSize:9,letterSpacing:"0.12em",color:VISOES[c].cor,textTransform:"uppercase",fontWeight:800}}>Saldo {VISOES[c].nome}</div>
+                        <div style={{fontSize:16,fontWeight:800,color:saldosCentro[c]>=0?"#1A1A1A":"#B4483C",marginTop:2}}>{fmt(saldosCentro[c])}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {visao==="ambos"&&<div style={{fontSize:10,color:"#666666",marginTop:8,fontWeight:600}}>O caixa da empresa não é somado como dinheiro pessoal: cada saldo fica do seu lado.</div>}
               </div>
+              {!isFechado&&<button onClick={novaTransf} style={{width:"100%",marginTop:12,background:"#fff",border:"1.5px dashed #888888",color:"#1A1A1A",borderRadius:10,fontSize:12.5,fontWeight:700,padding:"10px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>⇄ Transferência Pico → Isaque (pró-labore / retirada)</button>}
             </div>
             <div role="button" onClick={()=>setFluxoAberto(v=>!v)} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"#888888",letterSpacing:"0.2em",textTransform:"uppercase",marginBottom:10,fontWeight:700,cursor:"pointer",userSelect:"none"}}>
               <span>Fluxo Semanal</span>
@@ -1420,7 +1730,7 @@ export default function App() {
                 <span>Recebimentos do Mês</span>
                 <span style={{display:"inline-block",transform:recAberto?"rotate(90deg)":"none",transition:"transform .15s",fontSize:9}}>▶</span>
               </div>
-              <div style={{fontSize:11,color:"#888888",fontWeight:700}}>{receitas.length} entrada(s)</div>
+              <div style={{fontSize:11,color:"#888888",fontWeight:700}}>{receitas.length} entrada(s){receitasProg.length>0?` · ${receitasProg.length} a receber`:""}</div>
             </div>
             {recAberto&&<div style={card}>
               {sortedReceitas.length===0
@@ -1432,11 +1742,53 @@ export default function App() {
                 :sortedReceitas.map((r,i)=><ReceitaRow key={r.id} r={r} last={i===sortedReceitas.length-1}/>)
               }
             </div>}
+            <SecTitulo aberto={trAberto} onClick={()=>setTrAberto(v=>!v)} direita={<div style={{fontSize:11,color:"#888888",fontWeight:700}}>{transfMesTodas.filter(t=>!t.excluido).length} no mês</div>}>Transferências Pico → Isaque</SecTitulo>
+            {trAberto&&<div style={card}>
+              {transfMesTodas.length===0
+                ?<div style={{padding:"20px 0",textAlign:"center",color:"#888888",fontSize:13,fontWeight:700}}>Nenhuma transferência neste mês.</div>
+                :transfMesTodas.map((t,i)=>{
+                  const exc=!!t.excluido, prog=!exc&&t.data>hoje();
+                  return (
+                    <div key={t.id} className={`row-item${exc?" row-excluido":""}`} onClick={()=>!exc&&!isFechado&&setAcaoGen({kind:"transf",item:t})}
+                      style={{...rowDiv(i===transfMesTodas.length-1),cursor:exc?"default":"pointer"}}>
+                      <div style={{display:"flex",gap:10,alignItems:"center",flex:1,minWidth:0}}>
+                        <div style={{width:4,height:exc?16:36,background:exc?"#ddd":"linear-gradient(#CC0000,#2F65AC)",borderRadius:3,flexShrink:0}}/>
+                        <div style={{minWidth:0}}>
+                          <div style={{fontSize:14,fontWeight:700,color:exc?"#aaa":"#1A1A1A",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis",textDecoration:exc?"line-through":"none"}}>{t.descricao||TIPOS_TRANSF[t.tipo]}</div>
+                          <div style={{fontSize:11,color:"#888888",marginTop:2}}>{fmtDate(t.data)} · {TIPOS_TRANSF[t.tipo]||"Transferência"} · Pico → Isaque</div>
+                          {exc&&<span className="badge" style={{background:"#FBECEA",color:"#B4483C",border:"1px solid #EBBDB6"}}>Excluída{t.motivo_exclusao?` · ${t.motivo_exclusao}`:""}</span>}
+                        </div>
+                      </div>
+                      <div style={{textAlign:"right",flexShrink:0}}>
+                        <div style={{fontSize:15,fontWeight:800,color:exc?"#bbb":"#1A1A1A"}}>{fmt(t.valor)}</div>
+                        {prog&&<div style={{fontSize:9.5,fontWeight:700,color:"#8A3A30",marginTop:2}}>Agendada · {fmtDate(t.data)}</div>}
+                      </div>
+                    </div>
+                  );
+                })}
+            </div>}
+            <SecTitulo aberto={prevAberto} onClick={()=>setPrevAberto(v=>!v)}>Previsão de caixa</SecTitulo>
+            {prevAberto&&<>
+              <div style={{display:"flex",gap:4,background:"#fff",borderRadius:10,padding:4,boxShadow:"0 2px 8px #1A1A1A10",marginBottom:10}}>
+                {[7,15,30,60,90].map(d=>(
+                  <button key={d} onClick={()=>setPrevDias(d)} style={{flex:1,border:"none",borderRadius:8,padding:"9px 2px",fontSize:12,fontWeight:700,fontFamily:"'Inter',sans-serif",cursor:"pointer",background:prevDias===d?"#1A1A1A":"transparent",color:prevDias===d?"#fff":"#888888"}}>{d} dias</button>
+                ))}
+              </div>
+              <div className="prev-grid">
+                {prevs.map(({c,p})=><CardPrevisao key={c} c={c} p={p} dias={prevDias} destaque={visao==="ambos"&&c==="ambos"}/>)}
+              </div>
+              <div style={{fontSize:10.5,color:"#888888",fontWeight:600,lineHeight:1.5,marginBottom:6}}>
+                "Saldo registrado" é a soma de tudo que foi lançado no app desde {MESES[0].label} — não é o saldo do banco. Valores marcados como <b style={{color:"#A6822E"}}>estimativa</b> são projeções, não dinheiro garantido.
+              </div>
+            </>}
           </>
         )}
         {view==="categorias"&&(
           <>
-            <div style={{fontSize:22,fontWeight:800,color:"#1A1A1A",marginBottom:18,fontFamily:"'Inter',sans-serif"}}>Por Categoria</div>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",gap:10,marginBottom:18}}>
+              <div style={{fontSize:22,fontWeight:800,color:"#1A1A1A",fontFamily:"'Inter',sans-serif"}}>Por Categoria</div>
+              <button onClick={novaCat} style={{background:"#1A1A1A",color:"#fff",border:"none",borderRadius:10,padding:"9px 14px",fontSize:12.5,fontWeight:700,cursor:"pointer",fontFamily:"'Inter',sans-serif",whiteSpace:"nowrap"}}>+ Nova categoria</button>
+            </div>
             {byCat.length===0
               ?<div style={{...card,padding:24,textAlign:"center"}}><div style={{fontSize:32,marginBottom:8}}>📂</div><div style={{color:"#888888",fontSize:14,fontFamily:"'Inter',sans-serif",fontWeight:700}}>Nenhum lançamento neste mês.</div></div>
               :byCat.map(({cat,val})=>{
@@ -1465,8 +1817,197 @@ export default function App() {
                 );
               })
             }
+            {(()=>{
+              const linhas = CAT_ROWS.filter(r=>visao==="ambos"||!r.centro||r.centro==="ambos"||r.centro===visao).sort((a,b)=>a.nome.localeCompare(b.nome,"pt-BR"));
+              return (<>
+                <SecTitulo aberto={gerCatAberto} onClick={()=>setGerCatAberto(v=>!v)} direita={<div style={{fontSize:11,color:"#888888",fontWeight:700}}>{linhas.length} cadastrada{linhas.length===1?"":"s"}</div>}>Todas as categorias</SecTitulo>
+                {gerCatAberto&&<div style={card}>
+                  {linhas.length===0
+                    ?<div style={{padding:"20px 0",textAlign:"center",color:"#888888",fontSize:13,fontWeight:700}}>Nenhuma categoria cadastrada. Toque em "+ Nova categoria".</div>
+                    :linhas.map((r,i)=>{
+                      const c = r.centro==="empresa"||r.centro==="pessoal" ? VISOES[r.centro] : null;
+                      return (
+                        <div key={r.id||r.nome+i} className="row-item" style={rowDiv(i===linhas.length-1)}>
+                          <div style={{display:"flex",alignItems:"center",gap:10,minWidth:0}}>
+                            <span style={{width:12,height:12,borderRadius:"50%",background:r.cor||"#999",flexShrink:0}}/>
+                            <span style={{fontSize:14,fontWeight:700,color:"#1A1A1A",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{r.nome}</span>
+                            <span className="badge" style={{marginTop:0,background:c?c.fundo:"#F0F0F0",color:c?c.cor:"#666",border:`1px solid ${c?c.cor+"33":"#E0E0E0"}`}}>{c?c.curto:"Ambos"}</span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>}
+              </>);
+            })()}
           </>
         )}
+        {view==="metas"&&(()=>{
+          const todas = metas.filter(m=>naVisao(visao,m)).map(m=>({m,p:progMeta(m,glob)}));
+          const andamento = todas.filter(x=>!x.p.realizada).sort((a,b)=>b.p.status.nivel-a.p.status.nivel||b.p.pct-a.p.pct);
+          const realizadas = todas.filter(x=>x.p.realizada).sort((a,b)=>String(b.m.concluida_em||"").localeCompare(String(a.m.concluida_em||"")));
+          const medalhas = todas.reduce((s,x)=>s+MARCOS.filter(([v])=>x.p.tipo!=="limite"&&x.p.pct>=v).length,0);
+          const media = andamento.filter(x=>x.p.tipo!=="limite").length ? andamento.filter(x=>x.p.tipo!=="limite").reduce((s,x)=>s+Math.min(1,x.p.pct),0)/andamento.filter(x=>x.p.tipo!=="limite").length : 0;
+          const abas = [["andamento",`Em andamento (${andamento.length})`],["realizadas",`Realizadas (${realizadas.length})`],["nova","+ Nova meta"]];
+          return (<>
+            <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:12}}>
+              <div style={{fontSize:22,fontWeight:800,color:"#1A1A1A"}}>Metas</div>
+              <div style={{fontSize:11,color:"#888888",fontWeight:600}}>{VISOES[visao].nome}</div>
+            </div>
+            <div style={{display:"flex",gap:4,background:"#fff",borderRadius:12,padding:4,boxShadow:"0 2px 8px #1A1A1A10",marginBottom:14}}>
+              {abas.map(([k,l])=>(
+                <button key={k} onClick={()=>{ if(k==="nova"&&metaTab!=="nova"){ setFormMeta(null); setErroGen({}); } setMetaTab(k); }}
+                  style={{flex:1,border:"none",borderRadius:9,padding:"10px 4px",fontSize:12.5,fontWeight:800,fontFamily:"'Inter',sans-serif",cursor:"pointer",whiteSpace:"nowrap",
+                    background:metaTab===k?(k==="nova"?"#CC0000":"#1A1A1A"):"transparent",color:metaTab===k?"#fff":k==="nova"?"#CC0000":"#888888"}}>{l}</button>
+              ))}
+            </div>
+
+            {metaTab==="andamento"&&<>
+              {todas.length>0&&(
+                <div style={{display:"grid",gridTemplateColumns:"repeat(3,minmax(0,1fr))",gap:8,marginBottom:14}}>
+                  {[["🎯",andamento.length,"em andamento"],["🏆",realizadas.length,"realizadas"],["🏅",medalhas,"medalhas"]].map(([ic,n,l])=>(
+                    <div key={l} style={{background:"#fff",borderRadius:14,padding:"10px 8px",textAlign:"center",boxShadow:"0 2px 8px #1A1A1A10"}}>
+                      <div style={{fontSize:18}}>{ic}</div>
+                      <div style={{fontSize:20,fontWeight:800,color:"#1A1A1A",lineHeight:1.1}}>{n}</div>
+                      <div style={{fontSize:9.5,color:"#888888",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.06em"}}>{l}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+              {andamento.length>0&&media>0&&(
+                <div style={{background:"#fff",borderRadius:14,padding:"10px 14px",boxShadow:"0 2px 8px #1A1A1A10",marginBottom:14}}>
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:800,color:"#1A1A1A",marginBottom:6}}><span>Progresso geral</span><span>{Math.round(media*100)}%</span></div>
+                  <Bar percent={media*100} color="#CC0000"/>
+                </div>
+              )}
+              {andamento.length===0
+                ?<div style={{...card,padding:24,textAlign:"center"}}>
+                  <div style={{fontSize:34,marginBottom:8}}>🎯</div>
+                  <div style={{color:"#1A1A1A",fontSize:14,fontWeight:800}}>Nenhuma meta em andamento</div>
+                  <div style={{color:"#888888",fontSize:12,marginTop:4,marginBottom:14}}>Crie uma meta financeira ou objetiva e acompanhe o avanço aqui.</div>
+                  <button onClick={()=>{setFormMeta(null);setMetaTab("nova");}} style={{background:"#CC0000",color:"#fff",border:"none",borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>+ Nova meta</button>
+                </div>
+                :<div className="metas-grid">{andamento.map(({m,p})=><CardMeta key={m.id} m={m} p={p} onClick={()=>setAcaoGen({kind:"meta",item:m})} onQtd={ajustarQtd} onEtapa={alternarEtapa}/>)}</div>}
+            </>}
+
+            {metaTab==="realizadas"&&(realizadas.length===0
+              ?<div style={{...card,padding:24,textAlign:"center"}}>
+                <div style={{fontSize:34,marginBottom:8}}>🏆</div>
+                <div style={{color:"#1A1A1A",fontSize:14,fontWeight:800}}>Nenhuma meta realizada ainda</div>
+                <div style={{color:"#888888",fontSize:12,marginTop:4}}>Quando uma meta chega a 100%, ela vem para cá com o troféu.</div>
+              </div>
+              :realizadas.map(({m,p})=><CardRealizada key={m.id} m={m} p={p} onClick={()=>setAcaoGen({kind:"meta",item:m})}/>))}
+
+            {metaTab==="nova"&&(!formMeta
+              ? <>
+                  <div style={{fontSize:11,color:"#888888",letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:800,marginBottom:10}}>1. Tipo de meta</div>
+                  <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10}}>
+                    {Object.entries(GRUPOS_META).map(([k,g])=>(
+                      <button key={k} onClick={()=>novaMeta(k)} style={{background:"#fff",border:"2px solid #EEEEEE",borderRadius:16,padding:"18px 14px",textAlign:"left",cursor:"pointer",fontFamily:"'Inter',sans-serif",boxShadow:"0 2px 8px #1A1A1A10"}}>
+                        <div style={{fontSize:30,marginBottom:8}}>{g.icone}</div>
+                        <div style={{fontSize:16,fontWeight:800,color:"#1A1A1A"}}>{g.nome}</div>
+                        <div style={{fontSize:11.5,color:"#888888",fontWeight:600,marginTop:4,lineHeight:1.4}}>{g.desc}</div>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              : (()=>{
+                const f=formMeta.f, T=TIPOS_META[f.tipo], ed=formMeta.item;
+                const up=(k,v)=>{ setFormMeta(x=>({...x,f:{...x.f,[k]:v}})); setErroGen(e=>({...e,[k.replace("Digits","")]:null,[k]:null})); };
+                const addEtapa=()=>{ const t=f.novaEtapa.trim(); if(!t) return; setFormMeta(x=>({...x,f:{...x.f,etapas:[...x.f.etapas,{t,ok:false}],novaEtapa:""}})); setErroGen(e=>({...e,etapas:null})); };
+                const tiposDoGrupo = Object.entries(TIPOS_META).filter(([,t])=>t.grupo===f.grupo);
+                const previa = (()=>{ const mt={ id:"previa", nome:f.nome||"Nome da meta", tipo:f.tipo, centro:f.centro, categoria:f.categoria||null, unidade:f.unidade,
+                  valor_inicial:d2float(f.iniDigits), valor_alvo: T.grupo==="financeira"?d2float(f.alvoDigits):f.tipo==="quantidade"?(parseInt(f.alvoQtd)||0):f.etapas.length,
+                  valor_atual: f.tipo==="valor"?d2float(f.atualDigits):(parseInt(f.atualQtd)||0), etapas:f.etapas, data_inicio:f.data_inicio, prazo:f.prazo, criado_em:hoje() };
+                  return { mt, p: progMeta(mt, glob) }; })();
+                const Sec=({n,t})=><div style={{fontSize:11,color:"#888888",letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:800,margin:"18px 0 10px"}}>{n}. {t}</div>;
+                return (
+                  <div className="meta-form">
+                    <div>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                        <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A"}}>{ed?"Editar meta":`Nova meta ${GRUPOS_META[f.grupo].nome.toLowerCase()}`} {GRUPOS_META[f.grupo].icone}</div>
+                        {!ed&&<button onClick={()=>setFormMeta(null)} style={{background:"none",border:"none",color:"#CC0000",fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>trocar tipo</button>}
+                      </div>
+                      <Sec n={1} t={f.grupo==="financeira"?"O que medir":"Como medir"}/>
+                      <div style={{display:"grid",gridTemplateColumns:"repeat(2,minmax(0,1fr))",gap:8}}>
+                        {tiposDoGrupo.map(([k,t])=>(
+                          <button key={k} onClick={()=>up("tipo",k)} style={{textAlign:"left",background:f.tipo===k?"#1A1A1A":"#fff",color:f.tipo===k?"#fff":"#1A1A1A",border:`2px solid ${f.tipo===k?"#1A1A1A":"#EEEEEE"}`,borderRadius:12,padding:"10px 12px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
+                            <div style={{fontSize:13,fontWeight:800}}>{t.icone} {t.nome}</div>
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{fontSize:11.5,color:"#666666",fontWeight:600,marginTop:8,lineHeight:1.45}}>{T.desc}{T.auto?" Calculada sozinha pelos lançamentos.":""}</div>
+
+                      <Sec n={2} t="Identificação"/>
+                      <div style={{marginBottom:14}}>
+                        <label style={FL}>Nome da meta *</label>
+                        <input style={INP(erroGen.nome)} value={f.nome} onChange={e=>up("nome",e.target.value)}
+                          placeholder={{faturamento:"Ex: Faturar R$ 40 mil",acumular:"Ex: Reserva de emergência",limite:"Ex: Produtos até R$ 1.500",valor:"Ex: Juntar para a reforma",quantidade:"Ex: 100 assinantes ativos",etapas:"Ex: Concluir a reforma da fachada"}[f.tipo]}/>
+                        <ErrTxt msg={erroGen.nome}/>
+                      </div>
+                      <label style={FL}>De quem é a meta</label>
+                      <SeletorCentro valor={f.centro} onChange={v=>up("centro",v)}/>
+
+                      <Sec n={3} t={f.tipo==="etapas"?"Etapas":"Alvo"}/>
+                      {f.tipo==="limite"&&(
+                        <div style={{marginBottom:14}}>
+                          <label style={FL}>Categoria</label>
+                          <select style={INP(false)} value={f.categoria} onChange={e=>up("categoria",e.target.value)}>
+                            <option value="">Todas as despesas</option>
+                            {catsDoCentro(f.centro).map(c=><option key={c} value={c}>{c}</option>)}
+                          </select>
+                        </div>
+                      )}
+                      {T.grupo==="financeira"&&<CampoValor label={f.tipo==="faturamento"?"Faturamento desejado no mês *":f.tipo==="limite"?"Limite de gasto no mês *":"Valor-alvo *"} digits={f.alvoDigits} onChange={v=>up("alvoDigits",v)} err={erroGen.alvo}/>}
+                      {f.tipo==="acumular"&&<CampoValor label="Já guardado antes do início" digits={f.iniDigits} onChange={v=>up("iniDigits",v)}/>}
+                      {f.tipo==="valor"&&<CampoValor label="Quanto já tem hoje" digits={f.atualDigits} onChange={v=>up("atualDigits",v)} cor="#00704B"/>}
+                      {f.tipo==="quantidade"&&(
+                        <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr)",gap:8,marginBottom:14}}>
+                          <div><label style={FL}>Alvo *</label><input inputMode="numeric" style={INP(erroGen.alvoQtd)} placeholder="100" value={f.alvoQtd} onChange={e=>up("alvoQtd",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>
+                          <div><label style={FL}>Atual</label><input inputMode="numeric" style={INP(false)} placeholder="0" value={f.atualQtd} onChange={e=>up("atualQtd",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>
+                          <div><label style={FL}>Unidade</label><input style={INP(false)} placeholder="assinantes" value={f.unidade} onChange={e=>up("unidade",e.target.value.slice(0,20))}/></div>
+                          <div style={{gridColumn:"1 / -1"}}><ErrTxt msg={erroGen.alvoQtd}/></div>
+                        </div>
+                      )}
+                      {f.tipo==="etapas"&&(
+                        <div style={{marginBottom:14}}>
+                          {f.etapas.map((e,i)=>(
+                            <div key={i} style={{display:"flex",alignItems:"center",gap:8,background:"#FAFAFA",border:"1px solid #EEEEEE",borderRadius:10,padding:"8px 10px",marginBottom:6}}>
+                              <span style={{fontSize:11,fontWeight:800,color:"#888888",width:18}}>{i+1}.</span>
+                              <span style={{flex:1,fontSize:13,fontWeight:700,color:"#1A1A1A"}}>{e.t}</span>
+                              <button onClick={()=>setFormMeta(x=>({...x,f:{...x.f,etapas:x.f.etapas.filter((_,k)=>k!==i)}}))} style={{background:"none",border:"none",color:"#B4483C",fontSize:18,cursor:"pointer",lineHeight:1}} aria-label="Remover etapa">×</button>
+                            </div>
+                          ))}
+                          <div style={{display:"flex",gap:8}}>
+                            <input style={{...INP(erroGen.etapas),flex:1}} placeholder={f.etapas.length?"Próxima etapa":"Ex: Fazer 3 orçamentos"} value={f.novaEtapa}
+                              onChange={e=>up("novaEtapa",e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){e.preventDefault();addEtapa();}}}/>
+                            <button onClick={addEtapa} style={{background:"#1A1A1A",color:"#fff",border:"none",borderRadius:10,padding:"0 16px",fontSize:20,fontWeight:800,cursor:"pointer"}}>+</button>
+                          </div>
+                          <ErrTxt msg={erroGen.etapas}/>
+                        </div>
+                      )}
+
+                      <Sec n={4} t="Prazo"/>
+                      {T.mensal
+                        ?<div style={{fontSize:12,color:"#666666",fontWeight:600,background:"#F5F5F5",borderRadius:10,padding:"10px 12px"}}>🔁 Meta mensal: começa no dia 1 e renova todo mês sozinha.</div>
+                        :<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10}}>
+                          <div><label style={FL}>Início{f.tipo==="acumular"?" *":""}</label><input type="date" style={INP(erroGen.data_inicio)} value={f.data_inicio} onChange={e=>up("data_inicio",e.target.value)}/><ErrTxt msg={erroGen.data_inicio}/></div>
+                          <div><label style={FL}>Prazo *</label><input type="date" style={INP(erroGen.prazo)} min={f.data_inicio||undefined} value={f.prazo} onChange={e=>up("prazo",e.target.value)}/><ErrTxt msg={erroGen.prazo}/></div>
+                        </div>}
+
+                      <Sec n={5} t="Por que essa meta importa (opcional)"/>
+                      <textarea style={{...INP(false),minHeight:60,resize:"none",fontSize:14}} placeholder="Ex: abrir a segunda cadeira até o fim do ano" value={f.descricao} onChange={e=>up("descricao",e.target.value)}/>
+                    </div>
+                    <div>
+                      <div style={{fontSize:11,color:"#888888",letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:800,margin:"4px 0 10px"}}>Prévia</div>
+                      <CardMeta m={previa.mt} p={previa.p}/>
+                      <button className="btn-primary" onClick={salvarMeta}>{ed?"Salvar alterações":"Criar meta"}</button>
+                      <button className="btn-ghost" onClick={()=>{setFormMeta(null);setMetaTab("andamento");}}>Cancelar</button>
+                    </div>
+                  </div>
+                );
+              })())}
+          </>);
+        })()}
         {view==="relatorio"&&<Relatorio mesKey={mesAtual.mes} visao={visao} goPeriodo={n=>setMesIdx(i=>Math.max(0,Math.min(MESES.length-1,i+n)))}/>}
         {view==="historico"&&(
           <>
@@ -1506,7 +2047,7 @@ export default function App() {
         )}
       </div>
 
-      {!anyModal&&!isFechado&&view!=="caixa"&&view!=="relatorio"&&(
+      {!anyModal&&!isFechado&&view!=="caixa"&&view!=="relatorio"&&view!=="metas"&&(
         <button className="fab" onClick={()=>{setProgMode(false);setForm({...emptyForm(),centro:centroPadrao});setErro({});setShowForm(true);}}>
           <span style={{fontSize:20,lineHeight:1}}>+</span> Novo Lançamento
         </button>
@@ -1542,8 +2083,8 @@ export default function App() {
         </div>
       )}
       {ctx&&(()=>{
-        const it=ctx.item, prog=ctx.kind==="lanc"&&it.data>hoje();
-        const W=230, Hh=ctx.kind==="lanc"?(prog?170:130):130;
+        const it=ctx.item, prog=ctx.kind==="lanc"?it.data>hoje():recProg(it);
+        const W=240, Hh=prog?170:130;
         const left=Math.max(8,Math.min(ctx.x,window.innerWidth-W-8)), top=Math.max(8,Math.min(ctx.y,window.innerHeight-Hh-8));
         const ic=(d)=><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">{d}</svg>;
         const fecha=()=>setCtx(null);
@@ -1558,8 +2099,8 @@ export default function App() {
               <button className="ctx-item" onClick={()=>{fecha();ctx.kind==="lanc"?openEdit(it):openEditReceita(it);}}>
                 {ic(<><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></>)}<span>Editar</span>
               </button>
-              {prog&&<button className="ctx-item" onClick={()=>{fecha();provisionar(it);}}>
-                {ic(<><polyline points="20 6 9 17 4 12"/></>)}<span>Mover para executado</span>
+              {prog&&<button className="ctx-item" onClick={()=>{fecha();ctx.kind==="lanc"?provisionar(it):receberHoje(it);}}>
+                {ic(<><polyline points="20 6 9 17 4 12"/></>)}<span>{ctx.kind==="lanc"?"Mover para executado":"Marcar como recebida hoje"}</span>
               </button>}
               <div style={{height:1,background:"#FFFFFF1A",margin:"4px 2px"}}/>
               <button className="ctx-item ctx-red" onClick={()=>{fecha();ctx.kind==="lanc"?setDelItem(it):setDelReceita(it);}}>
@@ -1576,6 +2117,7 @@ export default function App() {
             <div style={{fontSize:15,fontWeight:800,color:"#1A1A1A",fontFamily:"'Inter',sans-serif",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{acaoReceita.descricao}</div>
             <div style={{fontSize:12,color:"#888888",marginBottom:16,fontFamily:"'Inter',sans-serif"}}>{fmt(acaoReceita.valor)} · {perRec(acaoReceita)}</div>
             <button className="btn-primary" onClick={()=>{const r=acaoReceita;setAcaoReceita(null);openEditReceita(r);}}>Editar</button>
+            {recProg(acaoReceita)&&<button className="btn-success" style={{marginTop:10}} onClick={()=>{const r=acaoReceita;setAcaoReceita(null);receberHoje(r);}}>Marcar como recebida hoje</button>}
             <button className="btn-danger" onClick={()=>{const r=acaoReceita;setAcaoReceita(null);setDelReceita(r);}}>Excluir</button>
             <button className="btn-ghost" onClick={()=>setAcaoReceita(null)}>Cancelar</button>
           </div>
@@ -1688,6 +2230,89 @@ export default function App() {
           </div>
         </div>
       )}
+      {formTransf&&(()=>{
+        const f=formTransf.f, up=(k,v)=>{setFormTransf(x=>({...x,f:{...x.f,[k]:v}}));setErroGen(e=>({...e,[k==="valorDigits"?"valor":k]:null}));};
+        return (
+          <Modal onClose={()=>setFormTransf(null)}>
+            <div style={{fontSize:20,fontWeight:800,color:"#1A1A1A",marginBottom:4}}>{formTransf.item?"Editar transferência":"Transferência Pico → Isaque"}</div>
+            <div style={{fontSize:11,color:"#888888",marginBottom:16,lineHeight:1.45}}>Registra uma vez só: sai do caixa da Pico Barbershop e entra no Isaque. Em Ambos não conta em dobro.</div>
+            <label style={FL}>Tipo</label>
+            <Chips opcoes={Object.entries(TIPOS_TRANSF)} valor={f.tipo} onChange={v=>up("tipo",v)}/>
+            <CampoValor label="Valor *" digits={f.valorDigits} onChange={v=>up("valorDigits",v)} err={erroGen.valor}/>
+            <div style={{marginBottom:16}}>
+              <label style={FL}>Data *</label>
+              <input type="date" style={INP(erroGen.data)} value={f.data} onChange={e=>up("data",e.target.value)}/>
+              <ErrTxt msg={erroGen.data}/>
+              {f.data>hoje()&&<div style={{background:"#FBECEA",border:"1px solid #EBBDB6",borderRadius:10,padding:"10px 12px",marginTop:8,fontSize:11.5,color:"#8A3A30",fontWeight:600}}>📅 Data futura — fica agendada e só entra nos saldos a partir de {fmtDate(f.data)}.</div>}
+            </div>
+            <div style={{marginBottom:16}}>
+              <label style={FL}>Descrição</label>
+              <input style={INP(false)} placeholder={`Ex: ${TIPOS_TRANSF[f.tipo]} ${MESES_NOMES_FULL[new Date().getMonth()].toLowerCase()}`} value={f.descricao} onChange={e=>up("descricao",e.target.value)}/>
+            </div>
+            <div style={{marginBottom:8}}>
+              <label style={FL}>Observação</label>
+              <textarea style={{...INP(false),minHeight:60,resize:"none",fontSize:14}} value={f.obs} onChange={e=>up("obs",e.target.value)}/>
+            </div>
+            <div style={{height:12}}/>
+            <button className="btn-primary" style={{background:"#1A1A1A"}} onClick={salvarTransf}>{formTransf.item?"Salvar alterações":"Registrar transferência"}</button>
+            <button className="btn-ghost" onClick={()=>setFormTransf(null)}>Cancelar</button>
+          </Modal>
+        );
+      })()}
+      {formCat&&(()=>{
+        const f=formCat.f, up=(k,v)=>{setFormCat(x=>({...x,f:{...x.f,[k]:v}}));setErroGen(e=>({...e,[k]:null}));};
+        return (
+          <Modal onClose={()=>setFormCat(null)}>
+            <div style={{fontSize:20,fontWeight:800,color:"#1A1A1A",marginBottom:16}}>Nova categoria</div>
+            <div style={{marginBottom:16}}>
+              <label style={FL}>Nome *</label>
+              <input style={INP(erroGen.nome)} placeholder="Ex: Marketing" value={f.nome} onChange={e=>up("nome",e.target.value)} autoFocus
+                onKeyDown={e=>{if(e.key==="Enter")salvarCat();}}/>
+              <ErrTxt msg={erroGen.nome}/>
+            </div>
+            <label style={FL}>Aparece em</label>
+            <Chips opcoes={[["empresa",VISOES.empresa.nome,VISOES.empresa.cor],["pessoal",VISOES.pessoal.nome,VISOES.pessoal.cor],["ambos","Ambos"]]} valor={f.centro} onChange={v=>up("centro",v)}/>
+            <div style={{fontSize:10.5,color:"#888888",margin:"-6px 0 8px",fontWeight:600}}>A cor é escolhida automaticamente, sem repetir as que já estão em uso.</div>
+            <div style={{height:12}}/>
+            <button className="btn-primary" style={{background:"#1A1A1A"}} onClick={salvarCat}>Criar categoria</button>
+            <button className="btn-ghost" onClick={()=>setFormCat(null)}>Cancelar</button>
+          </Modal>
+        );
+      })()}
+      {acaoGen&&(()=>{
+        const {kind,item}=acaoGen, fecha=()=>setAcaoGen(null);
+        const p = kind==="meta" ? progMeta(item, glob) : null;
+        return (
+          <Modal onClose={fecha}>
+            <div style={{fontSize:15,fontWeight:800,color:"#1A1A1A",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{kind==="meta"?item.nome:(item.descricao||TIPOS_TRANSF[item.tipo])}</div>
+            <div style={{fontSize:12,color:"#888888",marginBottom:16}}>
+              {kind==="meta" ? `${fmtMeta(item,p.atual)} de ${fmtMeta(item,p.alvo)} · ${(p.pct*100).toFixed(0)}% · ${p.status.txt}` : `${fmt(item.valor)} · ${fmtDate(item.data)} · Pico → Isaque`}
+            </div>
+            {kind==="meta"&&item.descricao&&<div style={{fontSize:12,color:"#444",background:"#F5F5F5",borderRadius:10,padding:"10px 12px",marginBottom:12,lineHeight:1.45}}>{item.descricao}</div>}
+            <button className="btn-primary" style={{background:"#1A1A1A"}} onClick={()=>{fecha(); kind==="meta"?editarMeta(item):editarTransf(item);}}>{kind==="meta"&&["valor","manual","quantidade"].includes(item.tipo)?"Atualizar progresso / editar":"Editar"}</button>
+            {kind==="meta"&&!p.realizada&&!p.mensal&&<button className="btn-success" style={{marginTop:10}} onClick={()=>{fecha();concluirMeta(item);}}>🏆 Marcar como realizada</button>}
+            {kind==="meta"&&item.concluida_em&&<button className="btn-ghost" onClick={()=>{fecha();reabrirMeta(item);}}>Reabrir meta</button>}
+            {kind==="transf"&&item.data>hoje()&&<button className="btn-success" style={{marginTop:10}} onClick={()=>{fecha();executarTransf(item);}}>Mover para executado</button>}
+            <button className="btn-danger" onClick={()=>{fecha();setMotivoExc("");setMotivoErr(false);setDelGen({kind,item});}}>Excluir</button>
+            <button className="btn-ghost" onClick={fecha}>Cancelar</button>
+          </Modal>
+        );
+      })()}
+      {delGen&&(
+        <Modal onClose={()=>{setDelGen(null);setMotivoExc("");setMotivoErr(false);}}>
+          <div style={{fontSize:18,fontWeight:800,color:"#B4483C",marginBottom:6}}>{delGen.kind==="meta"?"Excluir meta":"Excluir transferência"}</div>
+          <div style={{fontSize:14,color:"#1A1A1A",marginBottom:2,fontWeight:700}}>{delGen.kind==="meta"?delGen.item.nome:(delGen.item.descricao||TIPOS_TRANSF[delGen.item.tipo])}</div>
+          <div style={{fontSize:13,color:"#888888",marginBottom:16}}>{delGen.kind==="meta"?`Alvo ${fmtMeta(delGen.item,Number(delGen.item.valor_alvo)||0)}`:`${fmt(delGen.item.valor)} · ${fmtDate(delGen.item.data)}`}</div>
+          <label style={FL}>Motivo da Exclusão *</label>
+          <textarea placeholder="Descreva o motivo..." value={motivoExc} onChange={e=>{setMotivoExc(e.target.value);setMotivoErr(false);}}
+            style={{background:"#FAFAFA",border:`2px solid ${motivoErr?"#B4483C":"#E0E0E0"}`,borderRadius:10,color:"#1A1A1A",padding:"13px 14px",fontSize:14,fontFamily:"'Inter',sans-serif",width:"100%",minHeight:90,resize:"none"}}/>
+          <ErrTxt msg={motivoErr?"Informe o motivo da exclusão":null}/>
+          <div style={{height:16}}/>
+          <button className="btn-primary" style={{background:"#B4483C"}} onClick={confirmarDelGen}>Confirmar Exclusão</button>
+          <button className="btn-ghost" onClick={()=>{setDelGen(null);setMotivoExc("");setMotivoErr(false);}}>Cancelar</button>
+        </Modal>
+      )}
+      {showAlertas&&<PainelAlertas alertas={alertas} onClose={()=>setShowAlertas(false)}/>}
       {toast&&<div className="toast">{toast}</div>}
     </div>
   );
