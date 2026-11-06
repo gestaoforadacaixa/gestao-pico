@@ -14,26 +14,31 @@ const H = {
 async function sbGet(mes) {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/lancamentos?cliente_id=eq.${CID}&mes=eq.${mes}&order=data.desc`, { headers: H });
-    return r.ok ? r.json() : [];
-  } catch { return []; }
+    return r.ok ? r.json() : null;   // null = falhou (a tela mantém o que já tinha)
+  } catch { return null; }
 }
+// `programado` (conta a pagar) e `meta_id` (vínculo com meta) são opcionais: se a coluna ainda não existir no banco, o lançamento é salvo igual, sem ela.
+const semProg = ({programado, meta_id, ...resto}) => resto;
 async function sbPost(body) {
   try {
-    const r = await fetch(`${SUPA_URL}/rest/v1/lancamentos`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    let r = await fetch(`${SUPA_URL}/rest/v1/lancamentos`, { method: "POST", headers: H, body: JSON.stringify(body) });
+    if (r.status>=400 && r.status<500 && ("programado" in body || "meta_id" in body)) r = await fetch(`${SUPA_URL}/rest/v1/lancamentos`, { method: "POST", headers: H, body: JSON.stringify(semProg(body)) });
     return r.ok ? r.json() : null;
   } catch { return null; }
 }
 async function sbPatch(id, body) {
   try {
-    const r = await fetch(`${SUPA_URL}/rest/v1/lancamentos?id=eq.${id}`, { method: "PATCH", headers: { ...H, "Prefer": "return=minimal" }, body: JSON.stringify(body) });
+    const u = `${SUPA_URL}/rest/v1/lancamentos?id=eq.${id}`;
+    let r = await fetch(u, { method: "PATCH", headers: { ...H, "Prefer": "return=minimal" }, body: JSON.stringify(body) });
+    if (r.status>=400 && r.status<500 && ("programado" in body || "meta_id" in body)) r = await fetch(u, { method: "PATCH", headers: { ...H, "Prefer": "return=minimal" }, body: JSON.stringify(semProg(body)) });
     return r.ok;
   } catch { return false; }
 }
 async function rcGet(mes) {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/receitas?cliente_id=eq.${CID}&mes=eq.${mes}&order=semana.desc`, { headers: H });
-    return r.ok ? r.json() : [];
-  } catch { return []; }
+    return r.ok ? r.json() : null;   // null = falhou (a tela mantém o que já tinha)
+  } catch { return null; }
 }
 async function rcPost(body) {
   try {
@@ -76,8 +81,9 @@ const uid = () => (crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2)
 async function tbGet(tabela, q="") {
   try {
     const r = await fetch(`${SUPA_URL}/rest/v1/${tabela}?cliente_id=eq.${CID}${q?"&"+q:""}`, { headers: H });
-    return r.ok ? r.json() : [];
-  } catch { return []; }
+    if (r.status>=400 && r.status<500) return [];   // tabela ainda não existe: segue vazio
+    return r.ok ? r.json() : null;                   // erro de servidor/rede: mantém o que já tinha
+  } catch { return null; }
 }
 async function tbPost(tabela, body) {
   try {
@@ -170,16 +176,20 @@ function previsao(g, visao, dias) {
   return { saldoHoje, saidas, nProg:progs.length, transf, entradasProg, nRecProg:recFut.length, entradasEst, semEstimativa, comEstimativa: semEstimativa + entradasEst, baseDias: base };
 }
 const GRUPOS_META = {
-  financeira: { nome:"Financeira", icone:"💰", desc:"Valores em R$: faturamento, reserva, limite de gasto ou um valor livre." },
+  financeira: { nome:"Financeira", icone:"💰", desc:"Valores em R$: faturamento, reserva, patrimônio, limite de gasto ou um valor livre." },
   objetiva:   { nome:"Objetiva",   icone:"🎯", desc:"Conquistas e hábitos: contar, cumprir etapas, marcar os dias no calendário." },
 };
 const TIPOS_META = {
   faturamento: { grupo:"financeira", nome:"Faturamento mensal", icone:"📈", desc:"Receita recebida no mês até chegar no alvo. Renova todo mês.", auto:true, mensal:true },
   acumular:    { grupo:"financeira", nome:"Reserva",            icone:"🏦", desc:"Soma a sobra de caixa desde a data de início.", auto:true },
+  patrimonio:  { grupo:"financeira", nome:"Quitar patrimônio", icone:"🏠", desc:"Quitar um veículo ou imóvel parcelado. Cada despesa vinculada à meta conta como parcela paga.", auto:true },
   limite:      { grupo:"financeira", nome:"Limite de gasto",    icone:"🛡️", desc:"Gastar no máximo o limite no mês (total ou de uma categoria). Renova todo mês.", auto:true, mensal:true },
   valor:       { grupo:"financeira", nome:"Valor livre",        icone:"💵", desc:"Você informa quanto já tem (ex.: juntar para a reforma).", auto:false },
   objetiva:    { grupo:"objetiva",   nome:"Objetiva",           icone:"🎯", desc:"", auto:false },
 };
+const BENS = { veiculo:{nome:"Veículo",icone:"🚗"}, imovel:{nome:"Imóvel",icone:"🏠"}, outro:{nome:"Outro bem",icone:"🏷️"} };
+// Conta a pagar = programada e ainda não executada
+const pendConta = (l, hj) => despesaConta(l) && (l.programado===true || (l.programado==null && l.data>hj));
 // Medidores da meta objetiva — dá para usar mais de um na mesma meta
 const MEDIDORES = {
   quantidade: { nome:"Quantidade", icone:"🔢", desc:"Contar até um número (ex.: 100 assinantes)." },
@@ -191,6 +201,45 @@ const lerJson = (v, padrao) => { let e=v; if(typeof e==="string"){ try{ e=JSON.p
 const lerEtapas = m => { const e=lerJson(m.etapas, []); return Array.isArray(e)?e:[]; };
 const lerCheckins = m => { const e=lerJson(m.checkins, []); return Array.isArray(e)?[...new Set(e)].sort():[]; };
 const medidoresDe = m => { const md=lerJson(m.medidores, null); if(Array.isArray(md)&&md.length) return md.filter(k=>MEDIDORES[k]); return (m.tipo==="quantidade"||m.tipo==="etapas") ? [m.tipo] : []; };
+// Quantidade por período: acumulado (total) ou renovada todo dia / semana / mês
+const QTD_PER = { total:"Acumulado", dia:"Por dia", semana:"Por semana", mes:"Por mês" };
+const qtdPer = m => QTD_PER[m.qtd_per] ? m.qtd_per : "total";
+const lerLog = m => { const e=lerJson(m.qtd_log, {}); return e && typeof e==="object" && !Array.isArray(e) ? e : {}; };
+const iniPeriodo = (per, d) => { if(per==="mes") return d.slice(0,7)+"-01"; if(per==="semana"){ const [y,mo,dd]=d.split("-").map(Number); const w=new Date(y,mo-1,dd).getDay(); return addDias(d, -((w+6)%7)); } return d; };
+const qiVazio = { nome:"", alvo:"", atual:"", unidade:"", per:"total", fonte:"" };
+// Uma meta pode ter várias atividades com quantidade (ex.: 100 flexões por dia + 2 copos de água por dia)
+const qtdItens = m => {
+  const a = lerJson(m.qtd_itens, []);
+  if (Array.isArray(a) && a.length) return a.filter(x=>x&&typeof x==="object");
+  const alvo = Number(m.valor_alvo)||0;
+  return alvo>0 && medidoresDe(m).includes("quantidade") ? [{ id:"legacy", nome:"", alvo, atual:Number(m.valor_atual)||0, unidade:m.unidade||"", per:qtdPer(m), log:lerLog(m) }] : [];
+};
+// Quantas parcelas já venceram (antes de hoje) para um financiamento que começou em `ini`
+const decorridas = (ini, np) => { if(!ini||!(np>0)) return 0; let n=0; for(let i=0;i<np;i++) if(addMesesData(ini,i)<hoje()) n++; return n; };
+const itensDoForm = f => { const q=f.qi, rasc = parseInt(q.alvo)>0 ? [{ id:"rasc", nome:q.nome.trim(), alvo:parseInt(q.alvo), atual:q.per==="total"?(parseInt(q.atual)||0):0, unidade:q.unidade.trim(), per:q.per, fonte:q.per==="total"?q.fonte:"", log:{} }] : []; return [...f.qtdItens, ...rasc]; };
+function progItemQtd(it, todos=[]) {
+  const per = QTD_PER[it.per] ? it.per : "total", alvo = Number(it.alvo)||0, hj = hoje();
+  const n = v => Math.round(v).toLocaleString("pt-BR"), un = it.unidade ? " "+it.unidade : "";
+  let atual, rot="", extra="";
+  let auto = false;
+  const src = per==="total" && it.fonte ? todos.find(x=>x.id===it.fonte) : null;
+  if (per==="total" && src) {   // soma automática: tudo que foi marcado na atividade de origem (ex.: flexões por dia)
+    auto = true;
+    atual = (Number(it.atual)||0) + Object.values(src.log||{}).reduce((s,v)=>s+(Number(v)||0),0);
+    extra = `🔗 soma automática de ${src.nome||"outra atividade"}`;
+  }
+  else if (per==="total") atual = Number(it.atual)||0;
+  else {
+    const log = it.log && typeof it.log==="object" ? it.log : {}, ini = iniPeriodo(per,hj);
+    atual = Object.entries(log).filter(([d])=>d>=ini&&d<=hj).reduce((s,[,v])=>s+(Number(v)||0),0);
+    const grupos = {}; Object.entries(log).forEach(([d,v])=>{ const c=iniPeriodo(per,d); grupos[c]=(grupos[c]||0)+(Number(v)||0); });
+    const bat = Object.values(grupos).filter(v=>alvo>0&&v>=alvo).length, u = {dia:["dia","dias"],semana:["semana","semanas"],mes:["mês","meses"]}[per];
+    rot = {dia:"hoje",semana:"nesta semana",mes:"neste mês"}[per];
+    extra = `${QTD_PER[per]} · ${bat} ${bat===1?u[0]:u[1]} com a meta batida`;
+  }
+  return { id:it.id, nome:it.nome||"", per, auto, recorr:per!=="total", atual, alvo, pct: alvo>0?atual/alvo:0,
+    txt:`${n(atual)} de ${n(alvo)}${un}${rot?" "+rot:""}`, falta: alvo>atual?`${it.nome?it.nome+": ":""}faltam ${n(alvo-atual)}${un}${rot?" "+rot:""}`:"", extra };
+}
 const fmtQtd = (m, v) => `${Math.round(v).toLocaleString("pt-BR")}${m.unidade?" "+m.unidade:""}`;
 const fmtMeta = (m, v) => tipoMeta(m.tipo)==="objetiva" ? `${Math.round(v)}%` : fmt(v);
 const fracMes = () => { const h=hoje(), [y,m,d]=h.split("-").map(Number); return d/new Date(y,m,0).getDate(); };
@@ -199,6 +248,7 @@ function alvoCalendario(m) {
   const ini = m.data_inicio || (m.criado_em||"").slice(0,10) || hoje();
   if (!m.prazo || m.prazo<ini) return 0;
   const dias = diasEntre(ini, m.prazo) + 1;
+  if (m.cal_freq==="periodo") return Math.min(dias, Math.max(1, Number(m.cal_vezes)||1));
   return m.cal_freq==="semana" ? Math.max(1, Math.ceil(dias/7*(Number(m.cal_vezes)||1))) : dias;
 }
 // Sequência de dias seguidos marcados, contando de hoje (ou de ontem, se hoje ainda não foi marcado)
@@ -209,26 +259,39 @@ function sequencia(lista) {
 // Progresso de cada medidor da meta objetiva
 function progMedidores(m) {
   return medidoresDe(m).map(k=>{
-    if (k==="quantidade") { const alvo=Number(m.valor_alvo)||0, atual=Number(m.valor_atual)||0;
-      return { k, atual, alvo, pct: alvo>0?atual/alvo:0, txt:`${fmtQtd(m,atual)} de ${fmtQtd(m,alvo)}`, falta: alvo>atual?`faltam ${fmtQtd(m,alvo-atual)}`:"" }; }
+    if (k==="quantidade") {
+      const arr = qtdItens(m), its = arr.map(it=>progItemQtd(it,arr)), pct = its.length ? its.reduce((s,x)=>s+Math.min(1,x.pct),0)/its.length : 0, bat = its.filter(x=>x.pct>=1).length;
+      return { k, itens:its, recorr:its.some(x=>x.recorr), atual:bat, alvo:its.length, pct,
+        txt: its.length===1 ? `${its[0].nome?its[0].nome+": ":""}${its[0].txt}` : `${its.length} atividades · ${bat} no alvo`,
+        falta: its.map(x=>x.falta).filter(Boolean).join(" · ") };
+    }
     if (k==="etapas") { const e=lerEtapas(m), alvo=e.length, atual=e.filter(x=>x.ok).length;
       return { k, atual, alvo, pct: alvo>0?atual/alvo:0, txt:`${atual} de ${alvo} etapas`, falta: alvo>atual?`falta${alvo-atual>1?"m":""} ${alvo-atual} etapa${alvo-atual>1?"s":""}`:"" }; }
     const ini = m.data_inicio || (m.criado_em||"").slice(0,10) || hoje();
     const ck = lerCheckins(m).filter(d=>d>=ini && (!m.prazo||d<=m.prazo)), alvo=alvoCalendario(m), atual=ck.length;
-    return { k, atual, alvo, pct: alvo>0?atual/alvo:0, txt:`${atual} de ${alvo} dias marcados`, falta: alvo>atual?`faltam ${alvo-atual} dias`:"", seq: sequencia(ck), hojeOk: ck.includes(hoje()) };
+    return { k, atual, alvo, pct: alvo>0?atual/alvo:0, txt:`${atual} de ${alvo} dias marcados`, falta: alvo>atual?`faltam ${alvo-atual} dias${m.cal_freq==="periodo"&&m.prazo&&m.prazo>=hoje()?` · restam ${diasEntre(hoje(),m.prazo)+1} no prazo`:""}`:"", seq: sequencia(ck), hojeOk: ck.includes(hoje()) };
   });
 }
-// Progresso de uma meta: atual, alvo, %, status, prazo e a "dica" do que falta
 function progMeta(mt, g) {
   const hj=hoje(), mh=hj.slice(0,7), tipo=tipoMeta(mt.tipo), T=TIPOS_META[tipo], c=mt.centro||"empresa";
   const [yy,mm]=mh.split("-").map(Number), fimMes=`${mh}-${String(new Date(yy,mm,0).getDate()).padStart(2,"0")}`;
-  let alvo=Number(mt.valor_alvo)||0, atual=0, detalhe="", meds=null;
+  let alvo=Number(mt.valor_alvo)||0, atual=0, detalhe="", meds=null, patr=null;
   if (tipo==="faturamento") {
     atual = g.r.filter(r=>naVisao(c,r)&&(dataRec(r)||"").slice(0,7)===mh&&!recProg(r)).reduce((s,r)=>s+r.valor,0);
     detalhe = "recebido neste mês";
   } else if (tipo==="acumular") {
     atual = (Number(mt.valor_inicial)||0) + saldoPeriodo(g, c, mt.data_inicio||null, hj);
     detalhe = `sobra de caixa desde ${mt.data_inicio?fmtDate(mt.data_inicio):"o início"}`;
+  } else if (tipo==="patrimonio") {
+    const np = Number(mt.parcelas)||0, ent = Number(mt.valor_inicial)||0, antes = Math.min(np, Math.max(0, Number(mt.parc_pagas)||0));
+    const parcEst = np>0 ? Math.max(0, alvo-ent)/np : 0;
+    const pg = g.l.filter(l=>l.meta_id===mt.id && despesaConta(l) && !pendConta(l,hj) && l.data<=hj);
+    atual = ent + antes*parcEst + pg.reduce((s,l)=>s+l.valor,0);
+    const pagasTot = Math.min(np||Infinity, antes + pg.length);
+    let esperado = 0;
+    if (np>0 && mt.data_inicio) for (let i=0;i<np;i++) if (addMesesData(mt.data_inicio,i)<=hj) esperado++;
+    patr = { np, pagas:pagasTot, restam:Math.max(0,np-pagasTot), esperado, ent, antes };
+    detalhe = `${pagasTot}${np?` de ${np}`:""} parcela${pagasTot===1?"":"s"} paga${pagasTot===1?"":"s"}${ent>0?` · entrada ${fmt(ent)}`:""}`;
   } else if (tipo==="limite") {
     atual = g.l.filter(l=>despesaConta(l)&&naVisao(c,l)&&l.mes===mh&&l.data<=hj&&(!mt.categoria||l.categoria===mt.categoria)).reduce((s,l)=>s+l.valor,0);
     detalhe = mt.categoria ? `gasto em ${mt.categoria} neste mês` : "despesa total deste mês";
@@ -247,67 +310,80 @@ function progMeta(mt, g) {
   let dica = "";
   if (tipo==="faturamento") dica = falta>0 ? `Faltam ${fmt(falta)} · ${fmt(falta/diasCont)} por dia até o fim do mês` : "Alvo do mês batido!";
   else if (tipo==="limite") dica = atual<=alvo ? `Pode gastar ${fmt((alvo-atual)/diasCont)} por dia até o fim do mês` : `${fmt(atual-alvo)} acima do limite`;
+  else if (tipo==="patrimonio") dica = falta>0 && patr.restam>0 ? `Faltam ${fmt(falta)} · ${patr.restam} parcela${patr.restam>1?"s":""} de cerca de ${fmt(falta/patr.restam)}` : falta>0 ? `Faltam ${fmt(falta)}` : "Patrimônio quitado! 🎉";
   else if (falta>0 && (tipo==="acumular"||tipo==="valor")) dica = diasRest>0 ? `Faltam ${fmt(falta)} · cerca de ${fmt(falta/Math.max(1,diasRest/30))} por mês` : `Faltam ${fmt(falta)}`;
   else if (tipo==="objetiva" && meds) { const f=meds.map(x=>x.falta).filter(Boolean); dica = f.length ? f.join(" · ").replace(/^./,x=>x.toUpperCase()) : ""; }
-  const realizada = !!mt.concluida_em || (tipo==="acumular" && alvo>0 && pct>=1);
+  const realizada = !!mt.concluida_em || ((tipo==="acumular"||tipo==="patrimonio") && alvo>0 && pct>=1) || (tipo==="patrimonio" && patr.np>0 && patr.pagas>=patr.np);
   const OK={cor:"#00875A",fundo:"#E6F4EE",nivel:0}, AT={cor:"#A6822E",fundo:"#FBF3E4",nivel:1}, CR={cor:"#B4483C",fundo:"#FBECEA",nivel:2};
   let status;
   if (realizada) status = {...OK, txt:"realizada"};
   else if (tipo==="limite") status = pct>1 ? {...CR,txt:"estourou"} : pct>fracMes()+0.1 ? {...AT,txt:"gastando rápido"} : {...OK,txt:"dentro do limite"};
   else if (tipo==="faturamento" && pct>=1) status = {...OK, txt:"batida no mês"};
-  else if (pct>=1) status = {...OK, txt:"alvo atingido"};
+  else if (pct>=1) status = {...OK, txt: meds&&meds.some(x=>x.recorr) ? "meta do período batida" : "alvo atingido"};
+  else if (tipo==="patrimonio" && patr.esperado-patr.pagas>=1) { const at=patr.esperado-patr.pagas; status = at>=2 ? {...CR,txt:`${at} parcelas em aberto`} : {...AT,txt:"1 parcela em aberto"}; }
+  else if (tipo==="patrimonio") status = {...OK, txt:"em dia"};
   else if (diasRest!=null && diasRest<0) status = {...CR, txt:"atrasada"};
   else {
     let esperado = null;
     const ini = mt.data_inicio || (mt.criado_em||"").slice(0,10);
     if (tipo==="faturamento") esperado = fracMes();
+    else if (meds&&meds.some(x=>x.recorr)) esperado = null;
     else if (mt.prazo && ini && mt.prazo>ini) esperado = Math.min(1, Math.max(0, diasEntre(ini,hj)/diasEntre(ini,mt.prazo)));
     status = esperado!=null && pct < esperado-0.15 ? {...AT,txt:"abaixo do ritmo"} : {...OK,txt:"no ritmo"};
   }
-  return { tipo, atual, alvo, pct, status, detalhe, dica, diasRest, mensal:!!T.mensal, realizada, meds };
+  return { tipo, atual, alvo, pct, status, detalhe, dica, diasRest, mensal:!!T.mensal, realizada, meds, patr, recorr: !!(meds&&meds.some(x=>x.recorr)) };
 }
 // Central de alertas: SEMPRE olha os dois lados (Pico Barbershop e Isaque), qualquer que seja o perfil
 // selecionado no topo. Cada alerta sai com o "centro" de quem é, para a etiqueta.
+// Conta a pagar = programada e ainda não executada: ao executar (ou excluir) ela sai dos alertas sozinha.
 function gerarAlertas(g, metas) {
   const hj=hoje(), mh=hj.slice(0,7), out=[], centros=["empresa","pessoal"];
-  const nomeC = c => VISOES[c].nome;
+  const pend = l => pendConta(l,hj);
+  const soma = a => a.reduce((s,l)=>s+l.valor,0);
+  const lista = (a,n,f) => a.slice(0,n).map(f).join(", ")+(a.length>n?"…":"");
+  const plural = (n,s,p) => n>1?p:s;
   centros.forEach(c=>{
-    // 0) Contas que vencem hoje
-    const hojeL = g.l.filter(l=>despesaConta(l)&&centroDe(l)===c&&l.data===hj);
-    if (hojeL.length) out.push({ centro:c, nivel:2, hoje:true, titulo:`${hojeL.length} conta${hojeL.length>1?"s":""} para pagar hoje`,
-      motivo: hojeL.slice(0,4).map(l=>`${l.descricao} (${fmt(l.valor)})`).join(", ")+(hojeL.length>4?"…":""),
-      total: hojeL.reduce((s,l)=>s+l.valor,0),
-      impacto:`${fmt(hojeL.reduce((s,l)=>s+l.valor,0))} vencendo hoje`, acao:"Pague hoje para evitar juros e multa. Se já pagou, está tudo certo." });
-    // 1) Contas programadas vencendo nos próximos 3 dias
-    const vence = g.l.filter(l=>despesaConta(l)&&centroDe(l)===c&&l.data>hj&&l.data<=addDias(hj,3)).sort((a,b)=>a.data.localeCompare(b.data));
-    if (vence.length) out.push({ centro:c, nivel:1, titulo:`${vence.length} conta${vence.length>1?"s":""} vencendo nos próximos 3 dias`,
-      motivo: vence.slice(0,3).map(l=>`${l.descricao} (${fmtDate(l.data)})`).join(", ")+(vence.length>3?"…":""),
-      impacto:`${fmt(vence.reduce((s,l)=>s+l.valor,0))} saindo do caixa`, acao:"Confira se há saldo e execute no dia certo." });
-    // 2) Caixa previsto negativo em 30 dias (real, sem contar estimativa de entradas)
+    const gl = g.l.filter(l=>centroDe(l)===c);
+    // 0) Atrasadas (venceram e não foram executadas)
+    const atras = gl.filter(l=>pend(l)&&l.data<hj).sort((a,b)=>a.data.localeCompare(b.data));
+    if (atras.length) out.push({ centro:c, nivel:2, key:c+"atr:"+atras.map(l=>l.id).join(","), ids:atras.map(l=>l.id), titulo:`${atras.length} ${plural(atras.length,"conta atrasada","contas atrasadas")}`,
+      motivo: lista(atras,4,l=>`${l.descricao} (${fmtDate(l.data)})`), impacto:`${fmt(soma(atras))} vencido e ainda não executado`,
+      acao:"Pague e use “Mover para executado”. Se já pagou, mova para executado para sair daqui." });
+    // 1) Vencem hoje
+    const hojeL = gl.filter(l=>pend(l)&&l.data===hj);
+    if (hojeL.length) out.push({ centro:c, nivel:2, key:c+"hoje:"+hojeL.map(l=>l.id).join(","), ids:hojeL.map(l=>l.id), hoje:true, qtd:hojeL.length, titulo:`${hojeL.length} ${plural(hojeL.length,"conta","contas")} para pagar hoje`,
+      motivo: lista(hojeL,4,l=>`${l.descricao} (${fmt(l.valor)})`), total: soma(hojeL), impacto:`${fmt(soma(hojeL))} vencendo hoje`,
+      acao:"Pague hoje e mova para executado — o alerta some sozinho." });
+    // 2) Próximos 3 dias
+    const vence = gl.filter(l=>pend(l)&&l.data>hj&&l.data<=addDias(hj,3)).sort((a,b)=>a.data.localeCompare(b.data));
+    if (vence.length) out.push({ centro:c, nivel:1, key:c+"venc:"+vence.map(l=>l.id).join(","), ids:vence.map(l=>l.id), titulo:`${vence.length} ${plural(vence.length,"conta vencendo","contas vencendo")} nos próximos 3 dias`,
+      motivo: lista(vence,3,l=>`${l.descricao} (${fmtDate(l.data)})`),
+      impacto:`${fmt(soma(vence))} saindo do caixa`, acao:"Confira se há saldo e execute no dia certo." });
+    // 3) Caixa previsto negativo em 30 dias (real, sem contar estimativa de entradas)
     const p = previsao(g, c, 30);
-    if (p.semEstimativa<0) out.push({ centro:c, nivel: p.comEstimativa<0?2:1, titulo:`Caixa pode ficar negativo em 30 dias`,
+    if (p.semEstimativa<0) out.push({ centro:c, nivel: p.comEstimativa<0?2:1, key:c+"caixa:"+mh, titulo:`Caixa pode ficar negativo em 30 dias`,
       motivo:`Saldo hoje ${fmt(p.saldoHoje)}, contas programadas ${fmt(p.saidas)}.`,
       impacto: p.comEstimativa<0 ? `Mesmo com as entradas estimadas, fecha em ${fmt(p.comEstimativa)}.` : `Fecha em ${fmt(p.semEstimativa)} se não entrar dinheiro; com a média de entradas, ${fmt(p.comEstimativa)}.`,
       acao:"Reveja contas programadas ou antecipe recebimentos." });
-    // 3) Queda de receita vs mesmo período do mês anterior (a partir do dia 7)
+    // 4) Queda de receita vs mesmo período do mês anterior (a partir do dia 7)
     const dia = parseInt(hj.slice(8,10),10);
     if (dia>=7) {
       const [y,m]=mh.split("-").map(Number), ma=`${m===1?y-1:y}-${String(m===1?12:m-1).padStart(2,"0")}`;
       const ate = (r,mk)=>{ const d=dataRec(r)||""; return d.slice(0,7)===mk && parseInt(d.slice(8,10),10)<=dia; };
       const atual = g.r.filter(r=>centroDe(r)===c&&ate(r,mh)).reduce((s,r)=>s+r.valor,0);
       const ant   = g.r.filter(r=>centroDe(r)===c&&ate(r,ma)).reduce((s,r)=>s+r.valor,0);
-      if (ant>0 && atual<ant*0.8) out.push({ centro:c, nivel: atual<ant*0.6?2:1, titulo:`Receita ${(((ant-atual)/ant)*100).toFixed(0)}% abaixo do mês passado`,
+      if (ant>0 && atual<ant*0.8) out.push({ centro:c, nivel: atual<ant*0.6?2:1, key:c+"rec:"+mh, titulo:`Receita ${(((ant-atual)/ant)*100).toFixed(0)}% abaixo do mês passado`,
         motivo:`Até o dia ${dia}: ${fmt(atual)} agora contra ${fmt(ant)} no mês anterior.`, impacto:`Diferença de ${fmt(ant-atual)}.`,
         acao:"Verifique se todas as receitas foram lançadas e o movimento da agenda." });
     }
   });
-  // 4) Metas atrasadas ou fora do ritmo (de quem for a meta)
+  // 5) Metas atrasadas ou fora do ritmo (de quem for a meta)
   metas.filter(m=>!m.excluido).forEach(m=>{
     const p = progMeta(m, g);
-    if (p.status.nivel>0) out.push({ centro:m.centro||"empresa", nivel:p.status.nivel, titulo:`Meta "${m.nome}": ${p.status.txt}`,
+    if (p.status.nivel>0) out.push({ centro:m.centro||"empresa", nivel:p.status.nivel, key:"meta:"+m.id+":"+p.status.txt, titulo:`Meta "${m.nome}": ${p.status.txt}`,
       motivo:`${fmtMeta(m,p.atual)} de ${fmtMeta(m,p.alvo)} (${(p.pct*100).toFixed(0)}%) — ${p.detalhe}.`,
       impacto: m.tipo==="limite"?"Despesa acima do planejado.":"Objetivo pode não ser atingido no prazo.",
-      acao: m.tipo==="limite"?"Reduza os gastos ligados a essa meta.":"Reveja o plano ou ajuste o prazo da meta." });
+      acao: m.tipo==="limite"?"Reduza os gastos ligados a essa meta.":m.tipo==="patrimonio"?"Pague a parcela e vincule a despesa a esta meta ao lançar.":"Reveja o plano ou ajuste o prazo da meta." });
   });
   return out.sort((a,b)=>b.nivel-a.nivel || (a.centro==="empresa"?-1:1));
 }
@@ -480,7 +556,7 @@ function MonthPicker({mesAtual,onSelect,onClose}) {
     </>
   );
 }
-const emptyForm=()=>({centro:"empresa",descricao:"",valorDigits:"",categoria:"",meio:"",data:hoje(),obs:"",recorrente:false,repeticoes:""});
+const emptyForm=()=>({centro:"empresa",descricao:"",valorDigits:"",categoria:"",meio:"",data:hoje(),obs:"",recorrente:false,repeticoes:"",meta_id:""});
 const emptyFormReceita=()=>({centro:"empresa",descricao:"",valorDigits:"",data:hoje(),dataAte:"",obs:""});
 function SeletorCentro({valor,onChange}) {
   return (
@@ -494,7 +570,7 @@ function SeletorCentro({valor,onChange}) {
 }
 const INP=err=>({background:"#FAFAFA",border:`2px solid ${err?"#B4483C":"#E0E0E0"}`,borderRadius:10,color:"#1A1A1A",padding:"13px 14px",fontSize:15,fontFamily:"'Inter',sans-serif",width:"100%",transition:"border .2s"});
 const FL={fontSize:11,color:"#666666",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:7,display:"block",fontWeight:700,fontFamily:"'Inter',sans-serif"};
-function FormBody({form,setForm,erro,setErro,permiteRecorrencia}) {
+function FormBody({form,setForm,erro,setErro,permiteRecorrencia,metasVinc=[]}) {
   const Err=({k})=>erro[k]?<div style={{fontSize:11,color:"#B4483C",marginTop:4,fontWeight:700,fontFamily:"'Inter',sans-serif"}}>{erro[k]}</div>:null;
   return (
     <>
@@ -525,6 +601,18 @@ function FormBody({form,setForm,erro,setErro,permiteRecorrencia}) {
         <Err k="categoria"/>
         {catsDoCentro(form.centro||"empresa").filter(c=>c!=="Outros").length===0 && <div style={{fontSize:11,color:"#A6822E",marginTop:6,fontFamily:"'Inter',sans-serif"}}>Nenhuma categoria cadastrada ainda — peça pro seu mentor cadastrar pelo Painel.</div>}
       </div>
+      {metasVinc.filter(m=>(m.centro||"empresa")===(form.centro||"empresa")).length>0&&(
+        <div style={{marginBottom:16}}>
+          <label style={FL}>Vincular a uma meta (opcional)</label>
+          <select style={INP(false)} value={form.meta_id||""} onChange={e=>setForm(f=>({...f,meta_id:e.target.value}))}>
+            <option value="">Sem vínculo</option>
+            {metasVinc.filter(m=>(m.centro||"empresa")===(form.centro||"empresa")).map(m=><option key={m.id} value={m.id}>{(BENS[m.unidade]||BENS.outro).icone} {m.nome}</option>)}
+          </select>
+          {form.meta_id&&<div style={{background:"#E6F4EE",border:"1px solid #B5DCCB",borderRadius:10,padding:"10px 12px",marginTop:8,fontSize:11.5,color:"#00704B",fontWeight:600,fontFamily:"'Inter',sans-serif"}}>
+            🏠 Esta despesa conta como parcela paga da meta{form.data>hoje()?" assim que for movida para executado":""}. Continua somando normalmente nas despesas.
+          </div>}
+        </div>
+      )}
       <div style={{marginBottom:16}}>
         <label style={FL}>Meio de Pagamento *</label>
         <select style={INP(erro.meio)} value={form.meio}
@@ -919,15 +1007,6 @@ function Chips({opcoes, valor, onChange}) {
     </div>
   );
 }
-const SecTitulo = ({aberto, onClick, children, direita}) => (
-  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:20,marginBottom:10}}>
-    <div role="button" onClick={onClick} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"#888888",letterSpacing:"0.2em",textTransform:"uppercase",fontWeight:700,cursor:"pointer",userSelect:"none"}}>
-      <span>{children}</span>
-      <span style={{display:"inline-block",transform:aberto?"rotate(90deg)":"none",transition:"transform .15s",fontSize:9}}>▶</span>
-    </div>
-    {direita}
-  </div>
-);
 function Anel({pct, cor, size=88, centro}) {
   const r=36, circ=2*Math.PI*r, p=Math.max(0,Math.min(pct,1));
   return (
@@ -968,24 +1047,33 @@ function Prazo({p, m}) {
 function MiniCalendario({m, onDia}) {
   const hj=hoje(), ini=m.data_inicio||(m.criado_em||"").slice(0,10)||hj, fimMeta=m.prazo||hj;
   const marcados = new Set(lerCheckins(m));
-  const [mesV,setMesV] = useState(hj.slice(0,7)>fimMeta.slice(0,7)?fimMeta.slice(0,7):hj.slice(0,7)<ini.slice(0,7)?ini.slice(0,7):hj.slice(0,7));
+  const modoMes = false;   // só a semana (sem o mapa do mês inteiro)
+  const clamp = d => d<ini?ini:d>fimMeta?fimMeta:d;
+  const [ref,setRef] = useState(clamp(hj));            // um dia da semana exibida
+  const mesV = ref.slice(0,7);
   const [y,mo] = mesV.split("-").map(Number), nDias=new Date(y,mo,0).getDate(), pad=new Date(y,mo-1,1).getDay();
-  const podeAnt = mAdd(mesV,-1)>=ini.slice(0,7), podeProx = mAdd(mesV,1)<=fimMeta.slice(0,7);
-  const cel = [...Array(pad).fill(null), ...Array.from({length:nDias},(_,i)=>`${mesV}-${String(i+1).padStart(2,"0")}`)];
-  const nb = (ok,dir,txt)=><button onClick={()=>ok&&setMesV(mAdd(mesV,dir))} disabled={!ok} style={{background:"none",border:"none",fontSize:16,color:ok?"#1A1A1A":"#DDD",cursor:ok?"pointer":"default",padding:"0 8px"}}>{txt}</button>;
+  const dow = new Date(...ref.split("-").map((v,i)=>i===1?v-1:+v)).getDay(), semIni = addDias(ref,-dow);
+  const podeAnt = modoMes ? mAdd(mesV,-1)>=ini.slice(0,7) : addDias(semIni,-1)>=ini;
+  const podeProx = modoMes ? mAdd(mesV,1)<=fimMeta.slice(0,7) : addDias(semIni,7)<=fimMeta;
+  const ir = dir => setRef(r => modoMes ? clamp(`${mAdd(r.slice(0,7),dir)}-01`<ini?ini:`${mAdd(r.slice(0,7),dir)}-01`) : addDias(r,7*dir));
+  const cel = modoMes
+    ? [...Array(pad).fill(null), ...Array.from({length:nDias},(_,i)=>`${mesV}-${String(i+1).padStart(2,"0")}`)]
+    : Array.from({length:7},(_,i)=>addDias(semIni,i));
+  const rotulo = modoMes ? `${MESES_NOMES_FULL[mo-1]} ${y}` : `${fmtDate(cel[0])} – ${fmtDate(cel[6])}`;
+  const nb = (ok,dir,txt)=><button onClick={()=>ok&&ir(dir)} disabled={!ok} style={{background:"none",border:"none",fontSize:16,color:ok?"#1A1A1A":"#DDD",cursor:ok?"pointer":"default",padding:"0 8px"}}>{txt}</button>;
   return (
     <div>
       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-        {nb(podeAnt,-1,"‹")}<span style={{fontSize:12,fontWeight:800,color:"#1A1A1A"}}>{MESES_NOMES_FULL[mo-1]} {y}</span>{nb(podeProx,1,"›")}
+        {nb(podeAnt,-1,"‹")}<span style={{fontSize:12,fontWeight:800,color:"#1A1A1A"}}>{rotulo}</span>{nb(podeProx,1,"›")}
       </div>
       <div style={{display:"grid",gridTemplateColumns:"repeat(7,minmax(0,1fr))",gap:3}}>
-        {["D","S","T","Q","Q","S","S"].map((d,i)=><div key={i} style={{fontSize:9,fontWeight:800,color:"#AAAAAA",textAlign:"center"}}>{d}</div>)}
+        {["D","S","T","Q","Q","S","S"].map((d,i)=><div key={i} style={{fontSize:9,fontWeight:800,color:"#888888",textAlign:"center"}}>{d}</div>)}
         {cel.map((d,i)=>{
           if(!d) return <div key={i}/>;
           const dentro = d>=ini && d<=fimMeta, passado = d<=hj, ok = marcados.has(d), clicavel = dentro && passado && !!onDia;
           return (
             <button key={i} onClick={()=>clicavel&&onDia(m,d)} disabled={!clicavel}
-              style={{aspectRatio:"1",borderRadius:8,border:d===hj?"2px solid #1A1A1A":"1px solid "+(ok?"#00875A":"#EEEEEE"),
+              style={{aspectRatio:modoMes?"1":"auto",height:modoMes?"auto":34,borderRadius:8,border:d===hj?"2px solid #1A1A1A":"1px solid "+(ok?"#00875A":"#EEEEEE"),
                 background:ok?"#00875A":dentro?(passado?"#FAFAFA":"#fff"):"#F5F5F5",color:ok?"#fff":dentro?"#1A1A1A":"#CCCCCC",
                 fontSize:11,fontWeight:800,cursor:clicavel?"pointer":"default",padding:0,fontFamily:"'Inter',sans-serif",opacity:dentro?1:0.5}}>
               {ok?"✓":parseInt(d.slice(8),10)}
@@ -997,21 +1085,32 @@ function MiniCalendario({m, onDia}) {
   );
 }
 function BlocoMedidor({m, x, onQtd, onEtapa, onDia}) {
-  const M = MEDIDORES[x.k], cor = x.pct>=1 ? "#00875A" : "#CC0000";
+  const M = MEDIDORES[x.k], cor = x.pct>=1 ? "#00875A" : "#00875A";
   return (
     <div style={{border:"1px solid #EEEEEE",borderRadius:12,padding:"10px 12px",marginTop:10}}>
-      <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:6}}>
-        <span style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A"}}>{M.icone} {M.nome}</span>
-        <span style={{fontSize:11.5,fontWeight:800,color:x.pct>=1?"#00704B":"#666"}}>{x.txt} · {Math.round(Math.min(1,x.pct)*100)}%</span>
-      </div>
-      <Bar percent={x.pct*100} color={cor}/>
-      {x.k==="quantidade"&&onQtd&&(
-        <div style={{display:"flex",gap:8,marginTop:10}}>
-          {[-1,1].map(d=>(
-            <button key={d} onClick={()=>onQtd(m,d)} style={{flex:1,border:`2px solid ${d>0?"#00875A":"#E0E0E0"}`,background:d>0?"#E6F4EE":"#fff",color:d>0?"#00704B":"#666",borderRadius:10,padding:"8px",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>{d>0?"+ 1":"− 1"}</button>
-          ))}
+      {x.k!=="quantidade"&&<>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:6}}>
+          <span style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",display:"inline-flex",alignItems:"center",gap:8}}>{M.icone} {M.nome}
+          </span>
+          <span style={{fontSize:11.5,fontWeight:800,color:x.pct>=1?"#00704B":"#666"}}>{x.txt} · {Math.round(Math.min(1,x.pct)*100)}%</span>
         </div>
-      )}
+        <Bar percent={x.pct*100} color={cor}/>
+      </>}
+      {x.k==="quantidade"&&x.itens.map((it,ix)=>(
+        <div key={it.id} style={{marginTop:ix>0?12:0,borderTop:ix>0?"1px solid #EEEEEE":"none",paddingTop:ix>0?12:0}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",gap:8,marginBottom:6}}>
+            <span style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A"}}>🔢 {it.nome||"Atividade"}</span>
+            <span style={{fontSize:11.5,fontWeight:800,color:it.pct>=1?"#00704B":"#666"}}>{it.txt} · {Math.round(Math.min(1,it.pct)*100)}%</span>
+          </div>
+          <Bar percent={it.pct*100} color={cor}/>
+          {it.extra&&<div style={{fontSize:11,fontWeight:700,color:"#888888",marginTop:6}}>{it.auto?"":"🔁 "}{it.extra}</div>}
+          {onQtd&&!it.auto&&<div style={{display:"flex",gap:8,marginTop:8}}>
+            {[-1,1,5,10,50].map(d=>(
+              <button key={d} onClick={()=>onQtd(m,d,it.id)} style={{flex:1,border:`2px solid ${d>0?"#00875A":"#E0E0E0"}`,background:d>0?"#E6F4EE":"#fff",color:d>0?"#00704B":"#666",borderRadius:10,padding:"8px 4px",fontSize:15,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>{d>0?`+ ${d}`:`− ${Math.abs(d)}`}</button>
+            ))}
+          </div>}
+        </div>
+      ))}
       {x.k==="etapas"&&(
         <div style={{marginTop:10,display:"flex",flexDirection:"column",gap:4}}>
           {lerEtapas(m).map((e,i)=>(
@@ -1041,9 +1140,9 @@ function BlocoMedidor({m, x, onQtd, onEtapa, onDia}) {
 }
 function CardMeta({m, p, onClick, onQtd, onEtapa, onDia}) {
   const T = TIPOS_META[p.tipo], v = VISOES[m.centro||"empresa"], limite = p.tipo==="limite", obj = p.tipo==="objetiva";
-  const corAnel = limite ? p.status.cor : p.pct>=1 ? "#00875A" : p.status.nivel===2 ? "#B4483C" : p.status.nivel===1 ? "#A6822E" : "#CC0000";
+  const corAnel = limite ? p.status.cor : p.pct>=1 ? "#00875A" : p.status.nivel===2 ? "#B4483C" : p.status.nivel===1 ? "#A6822E" : "#00875A";
   const meds = p.meds || [];
-  const icone = obj ? (meds.length===1 ? MEDIDORES[meds[0].k].icone : "🎯") : T.icone;
+  const icone = obj ? (meds.length===1 ? MEDIDORES[meds[0].k].icone : "🎯") : p.tipo==="patrimonio" ? (BENS[m.unidade]||BENS.outro).icone : T.icone;
   const subtitulo = obj ? (meds.length ? meds.map(x=>MEDIDORES[x.k].nome).join(" + ") : "sem medidor") : T.nome;
   return (
     <div onClick={onClick} style={{background:"#fff",borderRadius:16,padding:"16px",boxShadow:"0 2px 10px #1A1A1A12",marginBottom:12,cursor:"pointer"}}>
@@ -1052,8 +1151,8 @@ function CardMeta({m, p, onClick, onQtd, onEtapa, onDia}) {
         <div style={{flex:1,minWidth:0}}>
           <div style={{fontSize:15,fontWeight:800,color:"#1A1A1A",lineHeight:1.25}}>{m.nome}</div>
           <div style={{display:"flex",gap:6,alignItems:"center",marginTop:4,flexWrap:"wrap"}}>
-            <span className="badge" style={{marginTop:0,background:v.fundo,color:v.cor,border:`1px solid ${v.cor}33`}}>{v.curto}</span>
             <span style={{fontSize:10.5,color:"#888888",fontWeight:700}}>{GRUPOS_META[T.grupo].nome} · {subtitulo}</span>
+            <span className="badge" style={{marginTop:0,background:v.fundo,color:v.cor,border:`1px solid ${v.cor}33`}}>{v.curto}</span>
           </div>
         </div>
         <span className="badge" style={{marginTop:0,background:p.status.fundo,color:p.status.cor,border:`1px solid ${p.status.cor}33`,whiteSpace:"nowrap"}}>{p.status.txt}</span>
@@ -1070,7 +1169,7 @@ function CardMeta({m, p, onClick, onQtd, onEtapa, onDia}) {
             :<>
               <div style={{fontSize:10,color:"#888888",fontWeight:700,letterSpacing:"0.08em",textTransform:"uppercase"}}>{limite?"Gasto":"Atual"}</div>
               <div style={{fontSize:21,fontWeight:800,color:"#1A1A1A",lineHeight:1.15}}>{fmtMeta(m,p.atual)}</div>
-              <div style={{fontSize:12,fontWeight:700,color:"#888888",marginTop:2}}>{limite?"limite":"alvo"} {fmtMeta(m,p.alvo)}</div>
+              <div style={{fontSize:12,fontWeight:700,color:"#888888",marginTop:2}}>{limite?"limite":"alvo"} {fmtMeta(m,p.alvo)}{p.patr&&p.patr.np>0?` · ${p.patr.pagas}/${p.patr.np} parcelas`:""}</div>
             </>}
           <div style={{marginTop:8}}><Prazo p={p} m={m}/></div>
         </div>
@@ -1082,7 +1181,7 @@ function CardMeta({m, p, onClick, onQtd, onEtapa, onDia}) {
   );
 }
 function CardRealizada({m, p, onClick}) {
-  const T = TIPOS_META[p.tipo], v = VISOES[m.centro||"empresa"];
+  const T = TIPOS_META[p.tipo];
   const quando = m.concluida_em || null;
   const antes = quando && m.prazo ? diasEntre(quando, m.prazo) : null;
   const tipoTxt = p.tipo==="objetiva" ? `🎯 ${(p.meds||[]).map(x=>MEDIDORES[x.k].nome).join(" + ")}` : `${T.icone} ${T.nome} · ${fmtMeta(m,p.alvo)}`;
@@ -1091,7 +1190,7 @@ function CardRealizada({m, p, onClick}) {
       <span style={{fontSize:30}}>🏆</span>
       <div style={{flex:1,minWidth:0}}>
         <div style={{fontSize:14.5,fontWeight:800,color:"#1A1A1A"}}>{m.nome}</div>
-        <div style={{fontSize:11,color:"#8A6A1F",fontWeight:700,marginTop:3}}>{tipoTxt} · {v.curto}</div>
+        <div style={{fontSize:11,color:"#8A6A1F",fontWeight:700,marginTop:3}}>{tipoTxt}</div>
         <div style={{fontSize:10.5,color:"#888888",fontWeight:600,marginTop:3}}>
           {quando?`Concluída em ${f2(quando)}`:"Alvo atingido"}{antes!=null&&antes>0?` · ${antes} dia${antes>1?"s":""} antes do prazo 🔥`:""}
         </div>
@@ -1099,6 +1198,15 @@ function CardRealizada({m, p, onClick}) {
     </div>
   );
 }
+const SecTitulo = ({aberto, onClick, children, direita}) => (
+  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:20,marginBottom:10}}>
+    <div role="button" onClick={onClick} style={{display:"flex",alignItems:"center",gap:6,fontSize:10,color:"#888888",letterSpacing:"0.2em",textTransform:"uppercase",fontWeight:700,cursor:"pointer",userSelect:"none"}}>
+      <span>{children}</span>
+      <span style={{display:"inline-block",transform:aberto?"rotate(90deg)":"none",transition:"transform .15s",fontSize:9}}>▶</span>
+    </div>
+    {direita}
+  </div>
+);
 function CardPrevisao({c, p, dias, destaque}) {
   const v = VISOES[c];
   const corV = x => x>=0 ? "#00875A" : "#B4483C";
@@ -1123,7 +1231,7 @@ function CardPrevisao({c, p, dias, destaque}) {
     </div>
   );
 }
-function PainelAlertas({alertas, onClose}) {
+function PainelAlertas({alertas, onClose, onIgnorar, onExecutei, nIgnorados, onRestaurar}) {
   const NIV = [{t:"Info",c:"#2F65AC",f:"#EEF3FB"},{t:"Atenção",c:"#A6822E",f:"#FBF3E4"},{t:"Crítico",c:"#B4483C",f:"#FBECEA"}];
   const lados = ["empresa","pessoal"].map(c=>({ c, v:VISOES[c], lista:alertas.filter(a=>a.centro===c) }));
   return (
@@ -1157,10 +1265,15 @@ function PainelAlertas({alertas, onClose}) {
                 <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Motivo:</b> {a.motivo}</div>
                 <div style={{fontSize:11.5,color:"#444",lineHeight:1.45}}><b>Impacto:</b> {a.impacto}</div>
                 <div style={{fontSize:11.5,color:n.c,lineHeight:1.45,fontWeight:700,marginTop:2}}>→ {a.acao}</div>
+                {(onIgnorar||onExecutei)&&<div style={{display:"flex",gap:8,marginTop:10,flexWrap:"wrap"}}>
+                  {a.ids&&onExecutei&&<button onClick={()=>onExecutei(a)} style={{background:"#E6F4EE",border:"1px solid #B5DCCB",color:"#00704B",borderRadius:8,fontSize:11,fontWeight:800,padding:"6px 10px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>✓ Já executei</button>}
+                  {onIgnorar&&<button onClick={()=>onIgnorar(a)} style={{background:"#fff",border:"1px solid #E0E0E0",color:"#666666",borderRadius:8,fontSize:11,fontWeight:800,padding:"6px 10px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>Tirar alerta</button>}
+                </div>}
               </div>
             );})}
         </div>
       ))}
+      {nIgnorados>0&&onRestaurar&&<button className="btn-ghost" onClick={onRestaurar}>Restaurar {nIgnorados} alerta{nIgnorados>1?"s":""} retirado{nIgnorados>1?"s":""}</button>}
       <button className="btn-ghost" onClick={onClose}>Fechar</button>
     </Modal>
   );
@@ -1245,9 +1358,9 @@ export default function App() {
       tbGet("transferencias", "order=data.desc"),
       tbGet("metas", "order=criado_em.asc"),
     ]);
-    setTransfRaw(tRaw||[]);
-    setGlob({ l:g.l, r:g.r, t:(tRaw||[]).filter(x=>!x.excluido) });
-    setMetas((mt||[]).filter(x=>!x.excluido));
+    if (!g.falhou) setGlob({ l:g.l, r:g.r, t:(tRaw||[]).filter(x=>!x.excluido) });
+    if (tRaw) setTransfRaw(tRaw);
+    if (mt) setMetas(mt.filter(x=>!x.excluido));
   }, []);
   const load = useCallback(async (silent=false) => {
     if (!silent) setLoading(true);
@@ -1256,9 +1369,9 @@ export default function App() {
       mesAnt ? sbGet(mesAnt.mes) : Promise.resolve([]),
       rcGet(mesAtual.mes),
     ]);
-    setAllItems(p => ({...p, [mesAtual.mes]: (dAtual||[]), ...(mesAnt ? {[mesAnt.mes]: (dAnt||[])} : {})}));
-    setAllReceitas(p => ({...p, [mesAtual.mes]: rAtual||[]}));
-    setLastSync(new Date());
+    setAllItems(p => ({...p, ...(dAtual ? {[mesAtual.mes]: dAtual} : {}), ...(mesAnt && dAnt ? {[mesAnt.mes]: dAnt} : {})}));
+    if (rAtual) setAllReceitas(p => ({...p, [mesAtual.mes]: rAtual}));
+    if (dAtual && rAtual) setLastSync(new Date());
     if (!silent) { setLoading(false); loadGlobal(); }
   }, [mesAtual.mes, mesAnt, loadGlobal]);
 
@@ -1279,7 +1392,7 @@ export default function App() {
   const ativos     = useMemo(()=>items.filter(t=>!t.excluido),[items]);
   const contaveis  = useMemo(()=>ativos.filter(t=>!isLiq(t) && t.data<=hoje()),[ativos]);
   const total      = useMemo(()=>contaveis.reduce((s,t)=>s+t.valor,0),[contaveis]);
-  const agendados  = useMemo(()=>ativos.filter(t=>!isLiq(t) && t.data>hoje()),[ativos]);
+  const agendados  = useMemo(()=>ativos.filter(t=>!isLiq(t) && t.data>hoje()),[ativos]);   // só o que ainda vai ser executado
   const totalAgendado = useMemo(()=>agendados.reduce((s,t)=>s+t.valor,0),[agendados]);
   const totalProgramado = total + totalAgendado;
   const totalReceita = useMemo(()=>receitas.reduce((s,r)=>s+r.valor,0),[receitas]);
@@ -1295,7 +1408,9 @@ export default function App() {
     const d = c => contaveis.filter(x=>centroDe(x)===c).reduce((s,x)=>s+x.valor,0);
     return { empresa: r("empresa")-d("empresa")-totalTransf, pessoal: r("pessoal")-d("pessoal")+totalTransf };
   },[receitas,contaveis,totalTransf]);
-  const alertas   = useMemo(()=>gerarAlertas(glob, metas),[glob,metas]);   // sempre Pico Barbershop + Isaque
+  const [ignorados,setIgnorados] = useState(()=>{ try{ const a=JSON.parse(localStorage.getItem("pico_alertas_ignorados")||"[]"); return Array.isArray(a)?a:[]; }catch{ return []; } });
+  const salvaIgn = lista => { const l=lista.slice(-200); setIgnorados(l); try{ localStorage.setItem("pico_alertas_ignorados", JSON.stringify(l)); }catch{} };
+  const alertas   = useMemo(()=>gerarAlertas(glob, metas).filter(a=>!ignorados.includes(a.key)),[glob,metas,ignorados]);   // sempre Pico Barbershop + Isaque
   const nivelAlerta = alertas.reduce((m,a)=>Math.max(m,a.nivel),0);
   const prevs     = useMemo(()=>(visao==="ambos"?["empresa","pessoal","ambos"]:[visao]).map(c=>({c, p:previsao(glob,c,prevDias)})),[glob,visao,prevDias]);
   // Corte do comparativo: mês corrente = até hoje; mês passado = mês inteiro; mês futuro = sem comparativo
@@ -1357,7 +1472,7 @@ export default function App() {
       id: uid(), cliente_id: CID, mes: form.data.slice(0,7), centro: form.centro||"empresa",
       categoria: form.categoria, descricao: form.descricao.trim(), valor,
       meio: form.meio, data: form.data, obs: form.obs, excluido: false,
-      recorrente: !!form.recorrente, motivo_exclusao: "",
+      recorrente: !!form.recorrente, motivo_exclusao: "", programado: form.data>hoje(), meta_id: form.meta_id||null,
     };
     const res = await sbPost(item);
     setShowForm(false);
@@ -1368,7 +1483,7 @@ export default function App() {
       const novas = [];
       for(let i=1;i<=n;i++){
         const dt = addMesesData(form.data, i);
-        novas.push({...item, id: uid(), mes: dt.slice(0,7), data: dt});
+        novas.push({...item, id: uid(), mes: dt.slice(0,7), data: dt, programado: dt>hoje()});
       }
       const resultados = await Promise.all(novas.map(x=>sbPost(x)));
       extras = resultados.filter(Boolean).length;
@@ -1392,7 +1507,7 @@ export default function App() {
     if(res){ load(); showToast("✓ Receita registrada"+foraDaVisao(payload.centro)); }
   };
   const openEdit=item=>{
-    setForm({centro:item.centro||"empresa",descricao:item.descricao,valorDigits:float2d(item.valor),categoria:item.categoria,meio:item.meio,data:item.data,obs:item.obs||""});
+    setForm({centro:item.centro||"empresa",descricao:item.descricao,valorDigits:float2d(item.valor),categoria:item.categoria,meio:item.meio,data:item.data,obs:item.obs||"",meta_id:item.meta_id||""});
     setErro({});setEditItem(item);
   };
   const salvarEdicao=async ()=>{
@@ -1402,6 +1517,7 @@ export default function App() {
       descricao: form.descricao.trim(), valor: d2float(form.valorDigits),
       categoria: form.categoria, meio: form.meio, data: form.data, centro: form.centro||"empresa",
       mes: form.data.slice(0,7), obs: form.obs,
+      programado: form.data>hoje() || (editItem.programado===true && form.data===editItem.data), meta_id: form.meta_id||null,
     });
     setEditItem(null);
     if(ok){ load(); showToast("✓ Lançamento atualizado"+foraDaVisao(form.centro)); }
@@ -1433,7 +1549,7 @@ export default function App() {
     if(ok){ load(); showToast("✓ Marcada como recebida"); }
   };
   const provisionar=async t=>{
-    const ok = await sbPatch(t.id, { data: hoje(), mes: hoje().slice(0,7) });
+    const ok = await sbPatch(t.id, { data: hoje(), mes: hoje().slice(0,7), programado: false });
     if(ok){ load(); showToast("✓ Movido para executado"); }
   };
   const openEditReceita=r=>{
@@ -1473,14 +1589,14 @@ export default function App() {
   // ─── Metas ───
   const baseMeta = grupo => ({ grupo, tipo: grupo==="financeira"?"faturamento":"objetiva", medidores: grupo==="objetiva"?["quantidade"]:[],
     nome:"", descricao:"", centro:centroPadrao, categoria:"", unidade:"",
-    iniDigits:"", alvoDigits:"", atualDigits:"", alvoQtd:"", atualQtd:"", etapas:[], novaEtapa:"", cal_freq:"diario", cal_vezes:"3", data_inicio:hoje(), prazo:"" });
+    iniDigits:"", alvoDigits:"", atualDigits:"", parcelas:"", parcPagas:"", qtdItens:[], qi:{...qiVazio}, etapas:[], novaEtapa:"", cal_freq:"diario", cal_vezes:"3", data_inicio:hoje(), prazo:"" });
   const novaMeta = grupo => { setErroGen({}); setFormMeta({ f: baseMeta(grupo) }); };
   const editarMeta = m => {
     const t=tipoMeta(m.tipo), g=TIPOS_META[t].grupo, n=x=>Number(x)||0, md=medidoresDe(m);
     setErroGen({}); setMetaTab("nova");
     setFormMeta({ item:m, f:{ ...baseMeta(g), tipo:t, medidores: g==="objetiva"?(md.length?md:["quantidade"]):[], nome:m.nome||"", descricao:m.descricao||"", centro:m.centro||"empresa", categoria:m.categoria||"", unidade:m.unidade||"",
       iniDigits:n(m.valor_inicial)?float2d(n(m.valor_inicial)):"", alvoDigits:g==="financeira"&&n(m.valor_alvo)?float2d(n(m.valor_alvo)):"", atualDigits:t==="valor"&&n(m.valor_atual)?float2d(n(m.valor_atual)):"",
-      alvoQtd:md.includes("quantidade")?String(n(m.valor_alvo)):"", atualQtd:md.includes("quantidade")?String(n(m.valor_atual)):"", etapas:lerEtapas(m),
+      parcelas:m.parcelas?String(m.parcelas):"", parcPagas:m.parc_pagas!=null?String(m.parc_pagas):"", qtdItens: md.includes("quantidade") ? qtdItens(m).map(it=>({...it,id:it.id==="legacy"?uid():it.id})) : [], etapas:lerEtapas(m),
       cal_freq:m.cal_freq||"diario", cal_vezes:String(m.cal_vezes||3), data_inicio:m.data_inicio||hoje(), prazo:m.prazo||"" } });
   };
   const salvarMeta = async () => {
@@ -1488,24 +1604,32 @@ export default function App() {
     if(!f.nome.trim()) e.nome="Dê um nome para a meta";
     if(T.grupo==="financeira" && (!f.alvoDigits||parseInt(f.alvoDigits)===0)) e.alvo="Informe o valor";
     if(obj && md.length===0) e.medidores="Escolha pelo menos um medidor";
-    if(md.includes("quantidade") && !(parseInt(f.alvoQtd)>0)) e.alvoQtd="Informe a quantidade-alvo";
+    if(md.includes("quantidade") && itensDoForm(f).length===0) e.alvoQtd="Informe o alvo e toque em Adicionar";
     if(md.includes("etapas") && f.etapas.length===0) e.etapas="Adicione pelo menos uma etapa";
     if(md.includes("calendario") && f.cal_freq==="semana" && !(parseInt(f.cal_vezes)>=1&&parseInt(f.cal_vezes)<=7)) e.cal_vezes="De 1 a 7 vezes";
-    if(!T.mensal && !f.prazo) e.prazo="Defina um prazo";
+    if(md.includes("calendario") && f.cal_freq==="periodo"){ const nd=(f.data_inicio&&f.prazo&&f.prazo>=f.data_inicio)?diasEntre(f.data_inicio,f.prazo)+1:0;
+      if(!(parseInt(f.cal_vezes)>=1)) e.cal_vezes="Informe quantos dias"; else if(nd&&parseInt(f.cal_vezes)>nd) e.cal_vezes=`O período tem só ${nd} dias`; }
+    const pat = f.tipo==="patrimonio";
+    if(pat && f.parcPagas!=="" && parseInt(f.parcPagas)>parseInt(f.parcelas)) e.parcPagas="Não pode passar do total de parcelas";
+    if(pat && !(parseInt(f.parcelas)>=1 && parseInt(f.parcelas)<=480)) e.parcelas="Informe as parcelas (1 a 480)";
+    if(pat && d2float(f.iniDigits)>=d2float(f.alvoDigits) && d2float(f.alvoDigits)>0) e.ini="A entrada deve ser menor que o valor do patrimônio";
+    if(pat && !f.data_inicio) e.data_inicio="Informe o vencimento da 1ª parcela";
+    if(!T.mensal && !pat && !f.prazo) e.prazo="Defina um prazo";
     if((f.tipo==="acumular"||md.includes("calendario")) && !f.data_inicio) e.data_inicio="Informe o início";
-    if(f.prazo && f.data_inicio && f.prazo<f.data_inicio) e.prazo="O prazo deve ser depois do início";
+    if(!pat && f.prazo && f.data_inicio && f.prazo<f.data_inicio) e.prazo="O prazo deve ser depois do início";
     if(Object.keys(e).length){ setErroGen(e); return; }
     const ed = formMeta.item;
-    const qtdAlvo = md.includes("quantidade") ? parseInt(f.alvoQtd,10) : 0, qtdAtual = md.includes("quantidade") ? (parseInt(f.atualQtd,10)||0) : 0;
     const body = { nome:f.nome.trim(), descricao:f.descricao.trim(), grupo:T.grupo, tipo:f.tipo, centro:f.centro,
-      categoria: f.tipo==="limite"&&f.categoria ? f.categoria : null, unidade: md.includes("quantidade") ? f.unidade.trim() : null,
-      valor_inicial: f.tipo==="acumular" ? d2float(f.iniDigits) : 0,
-      valor_alvo: T.grupo==="financeira" ? d2float(f.alvoDigits) : qtdAlvo,
-      valor_atual: f.tipo==="valor" ? d2float(f.atualDigits) : qtdAtual,
-      medidores: obj ? md : null,
+      categoria: f.tipo==="limite"&&f.categoria ? f.categoria : null, unidade: pat ? (BENS[f.unidade]?f.unidade:"veiculo") : null,
+      parcelas: pat ? parseInt(f.parcelas,10) : null,
+      parc_pagas: pat ? Math.min(parseInt(f.parcelas,10)||0, f.parcPagas!=="" ? (parseInt(f.parcPagas,10)||0) : decorridas(f.data_inicio, parseInt(f.parcelas,10)||0)) : null,
+      valor_inicial: (f.tipo==="acumular"||pat) ? d2float(f.iniDigits) : 0,
+      valor_alvo: T.grupo==="financeira" ? d2float(f.alvoDigits) : 0,
+      valor_atual: f.tipo==="valor" ? d2float(f.atualDigits) : 0,
+      medidores: obj ? md : null, qtd_itens: md.includes("quantidade") ? itensDoForm(f).map(it=>({...it,id:it.id==="rasc"?uid():it.id})) : null, qtd_per: null, qtd_log: null,
       etapas: md.includes("etapas") ? f.etapas.map(x=>({t:x.t,ok:!!x.ok})) : null,
-      cal_freq: md.includes("calendario") ? f.cal_freq : null, cal_vezes: md.includes("calendario")&&f.cal_freq==="semana" ? parseInt(f.cal_vezes,10) : null,
-      data_inicio: T.mensal ? null : (f.data_inicio||null), prazo: T.mensal ? null : (f.prazo||null) };
+      cal_freq: md.includes("calendario") ? f.cal_freq : null, cal_vezes: md.includes("calendario")&&(f.cal_freq==="semana"||f.cal_freq==="periodo") ? parseInt(f.cal_vezes,10) : null,
+      data_inicio: T.mensal ? null : (f.data_inicio||null), prazo: T.mensal ? null : pat ? addMesesData(f.data_inicio, parseInt(f.parcelas,10)-1) : (f.prazo||null) };
     if (!ed && md.includes("calendario")) body.checkins = [];
     // Já salva como realizada se tudo estiver em 100%
     const prov = progMeta({ ...(ed||{}), ...body, checkins: ed ? ed.checkins : [], criado_em: ed?.criado_em || new Date().toISOString() }, glob);
@@ -1513,7 +1637,7 @@ export default function App() {
     const ok = ed ? await tbPatch("metas", ed.id, body)
                   : !!(await tbPost("metas", { ...body, id:uid(), cliente_id:CID, excluido:false, motivo_exclusao:"", concluida_em: body.concluida_em||null, criado_em:new Date().toISOString() }));
     if(ok){ setFormMeta(null); setMetaTab("andamento"); loadGlobal(); showToast(ed?"✓ Meta atualizada":"🎯 Meta criada — bora!"); }
-    else showToast("⚠ Não salvou — rode o SQL de atualização das metas");
+    else showToast("⚠ Não salvou — rode o SQL das metas (sql-metas-colunas.sql e sql-patrimonio.sql)");
   };
   // Atualização rápida no próprio cartão (otimista: muda na tela e grava em seguida)
   const patchMetaLocal = async (m, body, msgFeita) => {
@@ -1522,18 +1646,35 @@ export default function App() {
     const ok = await tbPatch("metas", m.id, body);
     if(!ok){ setMetas(ms => ms.map(x => x.id===m.id ? m : x)); showToast("⚠ Não salvou"); return; }
     const depois = progMeta(novo, glob);
-    if(!m.concluida_em && !depois.mensal && depois.pct>=1){
+    if(!m.concluida_em && !depois.mensal && !depois.recorr && depois.pct>=1){
       await tbPatch("metas", m.id, { concluida_em: hoje() });
       setMetas(ms => ms.map(x => x.id===m.id ? { ...novo, concluida_em: hoje() } : x));
       showToast("🏆 Meta realizada! Parabéns!");
     } else if (msgFeita) showToast(msgFeita);
   };
-  const ajustarQtd = (m, d) => { const v = Math.max(0, (Number(m.valor_atual)||0) + d); patchMetaLocal(m, { valor_atual: v }); };
+  const ajustarQtd = (m, d, id) => {
+    const arr = lerJson(m.qtd_itens, []);
+    if (Array.isArray(arr) && arr.length) {
+      const hj = hoje(), it = arr.find(x=>x.id===id) || arr[0];
+      const it2 = (QTD_PER[it.per]&&it.per!=="total")
+        ? { ...it, log:{ ...(it.log||{}), [hj]: Math.max(0,(Number(it.log&&it.log[hj])||0)+d) } }
+        : { ...it, atual: Math.max(0,(Number(it.atual)||0)+d) };
+      const antes = progItemQtd(it,arr).pct, depois = progItemQtd(it2,arr).pct;
+      patchMetaLocal(m, { qtd_itens: arr.map(x=>x===it?it2:x) }, antes<1&&depois>=1 ? "✅ Meta batida!" : null);
+      return;
+    }
+    // metas antigas (uma quantidade só, nos campos antigos)
+    if (qtdPer(m)==="total") { const v = Math.max(0, (Number(m.valor_atual)||0) + d); patchMetaLocal(m, { valor_atual: v }); return; }
+    const l=lerLog(m), hj=hoje(), v=Math.max(0,(Number(l[hj])||0)+d), antes=progMeta(m,glob).pct;
+    const novo={...m, qtd_log:{...l,[hj]:v}}, depois=progMeta(novo,glob).pct;
+    patchMetaLocal(m, { qtd_log:{...l,[hj]:v} }, antes<1&&depois>=1 ? "✅ Meta do período batida!" : null);
+  };
   const alternarDia = (m, d) => { const l=lerCheckins(m), tem=l.includes(d), nova = tem ? l.filter(x=>x!==d) : [...l, d].sort();
     patchMetaLocal(m, { checkins: nova }, tem ? null : (d===hoje() ? `🔥 Dia marcado! ${sequencia([...nova].filter(x=>x<=hoje()))} seguido(s)` : "✓ Dia marcado")); };
   const alternarEtapa = (m, i) => { const e = lerEtapas(m).map((x,k)=> k===i ? { ...x, ok:!x.ok } : x); patchMetaLocal(m, { etapas: e }, e[i].ok ? "✓ Etapa concluída" : null); };
   const concluirMeta = async m => { if(await tbPatch("metas", m.id, { concluida_em: hoje() })){ loadGlobal(); setMetaTab("realizadas"); showToast("🏆 Meta realizada! Parabéns!"); } };
   const reabrirMeta  = async m => { if(await tbPatch("metas", m.id, { concluida_em: null })){ loadGlobal(); setMetaTab("andamento"); showToast("Meta reaberta"); } };
+
 
   // ─── Categorias (inserir nova / editar cor e orçamento) ───
   const novaCat = () => { setErroGen({}); setFormCat({ f:{ nome:"", centro:centroPadrao } }); };
@@ -1593,6 +1734,7 @@ export default function App() {
           <div style={{display:"flex",gap:6,alignItems:"center",marginTop:2,flexWrap:"wrap"}}>
             <span style={{fontSize:11,color:"#888888",fontFamily:"'Inter',sans-serif"}}>{fmtDate(t.data)} · {t.categoria} · {t.meio}</span>
             {isLiq(t)&&!t.excluido&&<span className="badge" style={{background:"#FBF3E4",color:"#8A6A1F",border:"1px solid #EAD9AE"}}>Liquidação · não conta</span>}
+            {t.meta_id&&!t.excluido&&(()=>{ const mm=metas.find(x=>x.id===t.meta_id); return mm?<span className="badge" style={{background:"#E6F4EE",color:"#00704B",border:"1px solid #B5DCCB"}}>{(BENS[mm.unidade]||BENS.outro).icone} {mm.nome}</span>:null; })()}
             {t.centro&&!t.excluido&&<span className="badge" style={{background:t.centro==="pessoal"?"#EEF3FB":"#FDECEC",color:t.centro==="pessoal"?"#2F65AC":"#CC0000",border:`1px solid ${t.centro==="pessoal"?"#C9D8EE":"#F2C4C4"}`}}>{t.centro==="pessoal"?VISOES.pessoal.curto:VISOES.empresa.curto}</span>}
           </div>
           {t.obs&&!t.excluido&&<div style={{fontSize:11,color:"#888888",marginTop:1,fontStyle:"italic",fontFamily:"'Inter',sans-serif"}}>{t.obs}</div>}
@@ -1757,9 +1899,9 @@ export default function App() {
                 </div>
                 <div role="button" onClick={()=>setPopProg(true)} style={{minWidth:0,borderLeft:"1px solid #EEEEEE",paddingLeft:12,cursor:"pointer"}}>
                   <div style={{fontSize:9,letterSpacing:"0.1em",color:"#888888",textTransform:"uppercase",marginBottom:6,fontWeight:700,lineHeight:1.3}}>Gastos programados ›</div>
-                  <div style={{fontSize:fmt(totalProgramado).length<=11?16:13,fontWeight:800,color:"#8A6A1F",lineHeight:1.1,fontFamily:"'Inter',sans-serif"}}>{fmt(totalProgramado)}</div>
+                  <div style={{fontSize:fmt(totalAgendado).length<=11?16:13,fontWeight:800,color:"#8A6A1F",lineHeight:1.1,fontFamily:"'Inter',sans-serif"}}>{fmt(totalAgendado)}</div>
                   <div style={{fontSize:9.5,color:"#888888",marginTop:6,fontWeight:600,lineHeight:1.35,fontFamily:"'Inter',sans-serif"}}>
-                    {agendados.length>0?`inclui ${fmt(totalAgendado)} a entrar (${agendados.length})`:"nada agendado"}
+                    {agendados.length>0?`${agendados.length} a executar · já executado fica em Total lançado`:"nada a executar"}
                   </div>
                 </div>
               </div>
@@ -2017,7 +2159,7 @@ export default function App() {
               {andamento.length>0&&media>0&&(
                 <div style={{background:"#fff",borderRadius:14,padding:"10px 14px",boxShadow:"0 2px 8px #1A1A1A10",marginBottom:14}}>
                   <div style={{display:"flex",justifyContent:"space-between",fontSize:11,fontWeight:800,color:"#1A1A1A",marginBottom:6}}><span>Progresso geral</span><span>{Math.round(media*100)}%</span></div>
-                  <Bar percent={media*100} color="#CC0000"/>
+                  <Bar percent={media*100} color="#00875A"/>
                 </div>
               )}
               {andamento.length===0
@@ -2025,7 +2167,7 @@ export default function App() {
                   <div style={{fontSize:34,marginBottom:8}}>🎯</div>
                   <div style={{color:"#1A1A1A",fontSize:14,fontWeight:800}}>Nenhuma meta em andamento</div>
                   <div style={{color:"#888888",fontSize:12,marginTop:4,marginBottom:14}}>Crie uma meta financeira ou objetiva e acompanhe o avanço aqui.</div>
-                  <button onClick={()=>{setFormMeta(null);setMetaTab("nova");}} style={{background:"#CC0000",color:"#fff",border:"none",borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>+ Nova meta</button>
+                  <button onClick={()=>{setFormMeta(null);setMetaTab("nova");}} style={{background:"#00875A",color:"#fff",border:"none",borderRadius:10,padding:"10px 18px",fontSize:13,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>+ Nova meta</button>
                 </div>
                 :<div className="metas-grid">{andamento.map(({m,p})=><CardMeta key={m.id} m={m} p={p} onClick={()=>setAcaoGen({kind:"meta",item:m})} onQtd={ajustarQtd} onEtapa={alternarEtapa} onDia={alternarDia}/>)}</div>}
             </>}
@@ -2056,12 +2198,12 @@ export default function App() {
                 const up=(k,v)=>{ setFormMeta(x=>({...x,f:{...x.f,[k]:v}})); setErroGen(e=>({...e,[k.replace("Digits","")]:null,[k]:null})); };
                 const addEtapa=()=>{ const t=f.novaEtapa.trim(); if(!t) return; setFormMeta(x=>({...x,f:{...x.f,etapas:[...x.f.etapas,{t,ok:false}],novaEtapa:""}})); setErroGen(e=>({...e,etapas:null})); };
                 const tiposDoGrupo = Object.entries(TIPOS_META).filter(([,t])=>t.grupo==="financeira");
-                const obj = f.tipo==="objetiva", md = obj ? f.medidores : [];
+                const obj = f.tipo==="objetiva", md = obj ? f.medidores : [], pat = f.tipo==="patrimonio", bem = BENS[f.unidade]?f.unidade:"veiculo";
                 const alternarMedidor = k => { setFormMeta(x=>{ const l=x.f.medidores; return {...x,f:{...x.f,medidores: l.includes(k)?l.filter(y=>y!==k):[...l,k]}}; }); setErroGen(e=>({...e,medidores:null})); };
-                const previa = (()=>{ const mt={ id:"previa", nome:f.nome||"Nome da meta", tipo:f.tipo, centro:f.centro, categoria:f.categoria||null, unidade:f.unidade, medidores:md,
-                  valor_inicial:d2float(f.iniDigits), valor_alvo: T.grupo==="financeira"?d2float(f.alvoDigits):(parseInt(f.alvoQtd)||0),
-                  valor_atual: f.tipo==="valor"?d2float(f.atualDigits):(parseInt(f.atualQtd)||0), etapas:f.etapas, checkins: ed ? ed.checkins : [],
-                  cal_freq:f.cal_freq, cal_vezes:parseInt(f.cal_vezes)||1, data_inicio:f.data_inicio, prazo:f.prazo, criado_em:hoje() };
+                const previa = (()=>{ const mt={ id:ed?ed.id:"previa", parcelas:parseInt(f.parcelas)||0, parc_pagas: f.parcPagas!=="" ? (parseInt(f.parcPagas)||0) : decorridas(f.data_inicio, parseInt(f.parcelas)||0), nome:f.nome||"Nome da meta", tipo:f.tipo, centro:f.centro, categoria:f.categoria||null, unidade:f.tipo==="patrimonio"?bem:f.unidade, medidores:md,
+                  valor_inicial:d2float(f.iniDigits), valor_alvo: T.grupo==="financeira"?d2float(f.alvoDigits):0,
+                  valor_atual: f.tipo==="valor"?d2float(f.atualDigits):0, qtd_itens: md.includes("quantidade") ? itensDoForm(f) : null, etapas:f.etapas, checkins: ed ? ed.checkins : [],
+                  cal_freq:f.cal_freq, cal_vezes:parseInt(f.cal_vezes)||1, data_inicio:f.data_inicio, prazo:f.tipo==="patrimonio"&&parseInt(f.parcelas)>0&&f.data_inicio?addMesesData(f.data_inicio,parseInt(f.parcelas)-1):f.prazo, criado_em:hoje() };
                   return { mt, p: progMeta(mt, glob) }; })();
                 const diasCal = f.prazo&&f.data_inicio&&f.prazo>=f.data_inicio ? alvoCalendario({data_inicio:f.data_inicio,prazo:f.prazo,cal_freq:f.cal_freq,cal_vezes:parseInt(f.cal_vezes)||1}) : 0;
                 const Sec=({n,t})=><div style={{fontSize:11,color:"#888888",letterSpacing:"0.15em",textTransform:"uppercase",fontWeight:800,margin:"18px 0 10px"}}>{n}. {t}</div>;
@@ -2070,7 +2212,7 @@ export default function App() {
                     <div>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
                         <div style={{fontSize:18,fontWeight:800,color:"#1A1A1A"}}>{ed?"Editar meta":`Nova meta ${GRUPOS_META[f.grupo].nome.toLowerCase()}`} {GRUPOS_META[f.grupo].icone}</div>
-                        {!ed&&<button onClick={()=>setFormMeta(null)} style={{background:"none",border:"none",color:"#CC0000",fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>trocar tipo</button>}
+                        {!ed&&<button onClick={()=>setFormMeta(null)} style={{background:"none",border:"none",color:"#00875A",fontSize:12,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>trocar tipo</button>}
                       </div>
                       <Sec n={1} t={obj?"Como medir · pode escolher mais de um":"O que medir"}/>
                       {obj
@@ -2078,7 +2220,7 @@ export default function App() {
                           <div style={{display:"flex",flexDirection:"column",gap:8}}>
                             {Object.entries(MEDIDORES).map(([k,M])=>{ const on=md.includes(k); return (
                               <button key={k} onClick={()=>alternarMedidor(k)} style={{display:"flex",alignItems:"center",gap:12,textAlign:"left",background:on?"#1A1A1A":"#fff",color:on?"#fff":"#1A1A1A",border:`2px solid ${on?"#1A1A1A":"#EEEEEE"}`,borderRadius:12,padding:"10px 12px",cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>
-                                <span style={{width:22,height:22,borderRadius:6,border:`2px solid ${on?"#fff":"#CCCCCC"}`,background:on?"#CC0000":"#fff",color:"#fff",fontSize:13,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{on?"✓":""}</span>
+                                <span style={{width:22,height:22,borderRadius:6,border:`2px solid ${on?"#fff":"#CCCCCC"}`,background:on?"#00875A":"#fff",color:"#fff",fontSize:13,fontWeight:900,display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>{on?"✓":""}</span>
                                 <span style={{flex:1}}>
                                   <span style={{display:"block",fontSize:13.5,fontWeight:800}}>{M.icone} {M.nome}</span>
                                   <span style={{display:"block",fontSize:11,fontWeight:600,opacity:0.75,marginTop:2}}>{M.desc}</span>
@@ -2104,7 +2246,7 @@ export default function App() {
                       <div style={{marginBottom:14}}>
                         <label style={FL}>Nome da meta *</label>
                         <input style={INP(erroGen.nome)} value={f.nome} onChange={e=>up("nome",e.target.value)}
-                          placeholder={{faturamento:"Ex: Faturar R$ 40 mil",acumular:"Ex: Reserva de emergência",limite:"Ex: Produtos até R$ 1.500",valor:"Ex: Juntar para a reforma",objetiva:"Ex: Postar no Instagram todo dia"}[f.tipo]}/>
+                          placeholder={{patrimonio:"Ex: Quitar o financiamento do carro",faturamento:"Ex: Faturar R$ 40 mil",acumular:"Ex: Reserva de emergência",limite:"Ex: Produtos até R$ 1.500",valor:"Ex: Juntar para a reforma",objetiva:"Ex: Ler 20 minutos por dia"}[f.tipo]}/>
                         <ErrTxt msg={erroGen.nome}/>
                       </div>
                       <label style={FL}>De quem é a meta</label>
@@ -2121,18 +2263,65 @@ export default function App() {
                           </select>
                         </div>
                       )}
-                      {T.grupo==="financeira"&&<CampoValor label={f.tipo==="faturamento"?"Faturamento desejado no mês *":f.tipo==="limite"?"Limite de gasto no mês *":"Valor-alvo *"} digits={f.alvoDigits} onChange={v=>up("alvoDigits",v)} err={erroGen.alvo}/>}
-                      {f.tipo==="acumular"&&<CampoValor label="Já guardado antes do início" digits={f.iniDigits} onChange={v=>up("iniDigits",v)}/>}
-                      {f.tipo==="valor"&&<CampoValor label="Quanto já tem hoje" digits={f.atualDigits} onChange={v=>up("atualDigits",v)} cor="#00704B"/>}
-                      {md.includes("quantidade")&&<div style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",marginBottom:8}}>🔢 Quantidade</div>}
-                      {md.includes("quantidade")&&(
-                        <div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr)",gap:8,marginBottom:14}}>
-                          <div><label style={FL}>Alvo *</label><input inputMode="numeric" style={INP(erroGen.alvoQtd)} placeholder="100" value={f.alvoQtd} onChange={e=>up("alvoQtd",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>
-                          <div><label style={FL}>Atual</label><input inputMode="numeric" style={INP(false)} placeholder="0" value={f.atualQtd} onChange={e=>up("atualQtd",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>
-                          <div><label style={FL}>Unidade</label><input style={INP(false)} placeholder="assinantes" value={f.unidade} onChange={e=>up("unidade",e.target.value.slice(0,20))}/></div>
-                          <div style={{gridColumn:"1 / -1"}}><ErrTxt msg={erroGen.alvoQtd}/></div>
+                      {pat&&(
+                        <div style={{marginBottom:14}}>
+                          <label style={FL}>O que vai quitar</label>
+                          <Chips opcoes={Object.entries(BENS).map(([k,b])=>[k,`${b.icone} ${b.nome}`])} valor={bem} onChange={v=>up("unidade",v)}/>
                         </div>
                       )}
+                      {T.grupo==="financeira"&&<CampoValor label={pat?"Valor do patrimônio *":f.tipo==="faturamento"?"Faturamento desejado no mês *":f.tipo==="limite"?"Limite de gasto no mês *":"Valor-alvo *"} digits={f.alvoDigits} onChange={v=>up("alvoDigits",v)} err={erroGen.alvo}/>}
+                      {(f.tipo==="acumular"||pat)&&<CampoValor label={pat?"Entrada / já quitado (opcional)":"Já guardado antes do início"} digits={f.iniDigits} onChange={v=>up("iniDigits",v)} err={erroGen.ini}/>}
+                      {pat&&(
+                        <div style={{marginBottom:14}}>
+                          <label style={FL}>Quantidade de parcelas *</label>
+                          <input inputMode="numeric" style={{...INP(erroGen.parcelas),width:"50%"}} placeholder="48" value={f.parcelas} onChange={e=>up("parcelas",e.target.value.replace(/\D/g,"").slice(0,3))}/>
+                          <ErrTxt msg={erroGen.parcelas}/>
+                          {parseInt(f.parcelas)>0&&d2float(f.alvoDigits)>d2float(f.iniDigits)&&<div style={{fontSize:11.5,color:"#00704B",fontWeight:700,background:"#E6F4EE",borderRadius:10,padding:"9px 12px",marginTop:8}}>
+                            Parcela estimada: {fmt((d2float(f.alvoDigits)-d2float(f.iniDigits))/parseInt(f.parcelas))} (sem juros). Ao lançar cada parcela como despesa, vincule à meta.
+                          </div>}
+                        </div>
+                      )}
+                      {f.tipo==="valor"&&<CampoValor label="Quanto já tem hoje" digits={f.atualDigits} onChange={v=>up("atualDigits",v)} cor="#00704B"/>}
+                      {md.includes("quantidade")&&<div style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",marginBottom:8}}>🔢 Quantidade · uma ou mais atividades</div>}
+                      {md.includes("quantidade")&&(()=>{
+                        const q=f.qi, upQi=(k,v)=>{ setFormMeta(x=>({...x,f:{...x.f,qi:{...x.f.qi,[k]:v}}})); setErroGen(e=>({...e,alvoQtd:null,medidores:null})); };
+                        const addQi=()=>{ if(!(parseInt(q.alvo)>0)){ setErroGen(e=>({...e,alvoQtd:"Informe o alvo antes de adicionar"})); return; }
+                          setFormMeta(x=>({...x,f:{...x.f,qtdItens:[...x.f.qtdItens,{id:uid(),nome:q.nome.trim(),alvo:parseInt(q.alvo),atual:q.per==="total"?(parseInt(q.atual)||0):0,unidade:q.unidade.trim(),per:q.per,fonte:q.per==="total"?q.fonte:"",log:{}}],qi:{...qiVazio,per:q.per}}}));
+                          setErroGen(e=>({...e,alvoQtd:null})); };
+                        return (
+                        <div style={{marginBottom:14}}>
+                          {f.qtdItens.map((it,i)=>(
+                            <div key={it.id||i} style={{display:"flex",alignItems:"center",gap:8,background:"#E6F4EE",border:"1px solid #B5DCCB",borderRadius:10,padding:"8px 10px",marginBottom:6}}>
+                              <span style={{flex:1,fontSize:13,fontWeight:700,color:"#1A1A1A"}}>{it.nome||"Atividade"} · {it.alvo}{it.unidade?" "+it.unidade:""} <span style={{color:"#666666",fontWeight:600}}>({QTD_PER[it.per]||"Acumulado"}{it.fonte?" · 🔗 automático":""})</span></span>
+                              <button onClick={()=>setFormMeta(x=>({...x,f:{...x.f,qtdItens:x.f.qtdItens.filter((_,k)=>k!==i)}}))} style={{background:"none",border:"none",color:"#B4483C",fontSize:18,cursor:"pointer",lineHeight:1}} aria-label="Remover atividade">×</button>
+                            </div>
+                          ))}
+                          <div style={{background:"#FAFAFA",border:"1px solid #EEEEEE",borderRadius:12,padding:12}}>
+                            <label style={FL}>Atividade</label>
+                            <input style={{...INP(false),marginBottom:12}} placeholder="Ex: Flexões, Copos de água" value={q.nome} onChange={e=>upQi("nome",e.target.value.slice(0,40))}/>
+                            <label style={FL}>Como contar</label>
+                            <Chips opcoes={Object.entries(QTD_PER)} valor={q.per} onChange={v=>upQi("per",v)}/>
+                            <div style={{fontSize:11.5,color:"#666666",fontWeight:600,margin:"-8px 0 10px",lineHeight:1.45}}>{{total:"Soma tudo até chegar no alvo (ex.: 100 assinantes).",dia:"Renova todo dia (ex.: 100 flexões por dia).",semana:"Renova toda semana, de segunda a domingo.",mes:"Renova todo mês."}[q.per]}</div>
+                            {q.per==="total"&&f.qtdItens.some(x=>x.per!=="total")&&(
+                              <div style={{marginBottom:12}}>
+                                <label style={FL}>Somar automaticamente de</label>
+                                <select style={INP(false)} value={q.fonte} onChange={e=>upQi("fonte",e.target.value)}>
+                                  <option value="">Não — contar à mão</option>
+                                  {f.qtdItens.filter(x=>x.per!=="total").map(x=><option key={x.id} value={x.id}>{x.nome||"Atividade"} ({QTD_PER[x.per]})</option>)}
+                                </select>
+                                {q.fonte&&<div style={{fontSize:11.5,color:"#00704B",fontWeight:700,marginTop:6}}>Tudo que você marcar nessa atividade entra neste total sozinho.</div>}
+                              </div>
+                            )}
+                            <div style={{display:"grid",gridTemplateColumns:q.per==="total"?"minmax(0,1fr) minmax(0,1fr) minmax(0,1.2fr)":"minmax(0,1fr) minmax(0,1.2fr)",gap:8}}>
+                              <div><label style={FL}>{q.per==="total"?"Alvo *":`Alvo ${{dia:"por dia",semana:"por semana",mes:"por mês"}[q.per]} *`}</label><input inputMode="numeric" style={INP(erroGen.alvoQtd)} placeholder="100" value={q.alvo} onChange={e=>upQi("alvo",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>
+                              {q.per==="total"&&<div><label style={FL}>Atual</label><input inputMode="numeric" style={INP(false)} placeholder="0" value={q.atual} onChange={e=>upQi("atual",e.target.value.replace(/\D/g,"").slice(0,7))}/></div>}
+                              <div><label style={FL}>Unidade</label><input style={INP(false)} placeholder={q.per==="total"?"assinantes":"repetições"} value={q.unidade} onChange={e=>upQi("unidade",e.target.value.slice(0,20))}/></div>
+                            </div>
+                            <ErrTxt msg={erroGen.alvoQtd}/>
+                            <button onClick={addQi} style={{width:"100%",marginTop:10,border:"2px solid #00875A",background:"#E6F4EE",color:"#00704B",borderRadius:10,padding:"10px",fontSize:14,fontWeight:800,cursor:"pointer",fontFamily:"'Inter',sans-serif"}}>+ Adicionar atividade</button>
+                          </div>
+                        </div>);
+                      })()}
                       {md.includes("etapas")&&<div style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",marginBottom:8}}>✅ Etapas</div>}
                       {md.includes("etapas")&&(
                         <div style={{marginBottom:14}}>
@@ -2156,13 +2345,25 @@ export default function App() {
                         <div style={{marginBottom:14}}>
                           <div style={{fontSize:12.5,fontWeight:800,color:"#1A1A1A",marginBottom:8}}>📅 Calendário</div>
                           <label style={FL}>Frequência</label>
-                          <Chips opcoes={[["diario","Todos os dias"],["semana","Algumas vezes por semana"]]} valor={f.cal_freq} onChange={v=>up("cal_freq",v)}/>
+                          <Chips opcoes={[["diario","Todos os dias"],["semana","Vezes por semana"],["periodo","Dias no período"]]} valor={f.cal_freq} onChange={v=>up("cal_freq",v)}/>
                           {f.cal_freq==="semana"&&(
                             <div style={{display:"flex",alignItems:"center",gap:10,margin:"-6px 0 10px"}}>
                               <input inputMode="numeric" style={{...INP(erroGen.cal_vezes),width:80,textAlign:"center",fontWeight:800}} value={f.cal_vezes} onChange={e=>up("cal_vezes",e.target.value.replace(/\D/g,"").slice(0,1))}/>
                               <span style={{fontSize:13,fontWeight:700,color:"#444"}}>vezes por semana</span>
                             </div>
                           )}
+                          {f.cal_freq==="periodo"&&(()=>{
+                            const ini=f.data_inicio&&f.data_inicio>hoje()?f.data_inicio:hoje(), restam=f.prazo&&f.prazo>=ini?diasEntre(ini,f.prazo)+1:0, n=parseInt(f.cal_vezes)||0;
+                            return (
+                            <div style={{margin:"-6px 0 10px"}}>
+                              <div style={{display:"flex",alignItems:"center",gap:10}}>
+                                <span style={{fontSize:13,fontWeight:700,color:"#444"}}>Cumprir em</span>
+                                <input inputMode="numeric" style={{...INP(erroGen.cal_vezes),width:90,textAlign:"center",fontWeight:800}} value={f.cal_vezes} onChange={e=>up("cal_vezes",e.target.value.replace(/\D/g,"").slice(0,3))}/>
+                                <span style={{fontSize:13,fontWeight:700,color:"#444"}}>dias, quando quiser</span>
+                              </div>
+                              {restam>0&&n>0&&<div style={{fontSize:11.5,color:"#666666",fontWeight:700,marginTop:8}}>Restam {restam} dia{restam>1?"s":""} até o prazo · você precisa marcar {Math.min(n,restam)} (≈ {(Math.min(n,restam)/restam*7).toFixed(1).replace(".",",")} por semana).</div>}
+                            </div>);
+                          })()}
                           <ErrTxt msg={erroGen.cal_vezes}/>
                           <div style={{fontSize:11.5,color:"#00704B",fontWeight:700,background:"#E6F4EE",borderRadius:10,padding:"9px 12px"}}>
                             {diasCal>0 ? `Meta: marcar ${diasCal} dia${diasCal>1?"s":""} entre ${fmtDate(f.data_inicio)} e ${fmtDate(f.prazo)}. Cada dia marcado avança a meta e conta para a sequência 🔥.` : "Defina o início e o prazo abaixo para calcular quantos dias marcar."}
@@ -2173,6 +2374,24 @@ export default function App() {
                       <Sec n={4} t="Prazo"/>
                       {T.mensal
                         ?<div style={{fontSize:12,color:"#666666",fontWeight:600,background:"#F5F5F5",borderRadius:10,padding:"10px 12px"}}>🔁 Meta mensal: começa no dia 1 e renova todo mês sozinha.</div>
+                        :pat
+                        ?(()=>{ const np=parseInt(f.parcelas)||0, dec=decorridas(f.data_inicio,np), pagasV=Math.min(np, f.parcPagas!==""?(parseInt(f.parcPagas)||0):dec), fim=np>0&&f.data_inicio?addMesesData(f.data_inicio,np-1):null; return (
+                        <div>
+                          <label style={FL}>Quando iniciou · vencimento da 1ª parcela *</label>
+                          <input type="date" style={INP(erroGen.data_inicio)} value={f.data_inicio} onChange={e=>up("data_inicio",e.target.value)}/><ErrTxt msg={erroGen.data_inicio}/>
+                          {np>0&&f.data_inicio&&<>
+                            <div style={{marginTop:14}}>
+                              <label style={FL}>Parcelas já pagas</label>
+                              <input inputMode="numeric" style={{...INP(erroGen.parcPagas),width:"50%"}} placeholder={String(dec)} value={f.parcPagas} onChange={e=>up("parcPagas",e.target.value.replace(/\D/g,"").slice(0,3))}/>
+                              <ErrTxt msg={erroGen.parcPagas}/>
+                              <div style={{fontSize:11,color:"#888888",fontWeight:600,marginTop:6}}>Em branco: usa as {dec} parcela{dec===1?"":"s"} que já venceram até hoje. As próximas você vincula ao lançar a despesa.</div>
+                            </div>
+                            <div style={{fontSize:12,color:"#00704B",fontWeight:700,background:"#E6F4EE",borderRadius:10,padding:"10px 12px",marginTop:12,lineHeight:1.55}}>
+                              📅 Encerra em <b>{fmtDate(fim)}/{fim.slice(0,4)}</b><br/>
+                              ✅ {pagasV} paga{pagasV===1?"":"s"} · ⏳ faltam <b>{Math.max(0,np-pagasV)}</b> parcela{np-pagasV===1?"":"s"}{np-pagasV>0&&d2float(f.alvoDigits)>d2float(f.iniDigits)?` de cerca de ${fmt((d2float(f.alvoDigits)-d2float(f.iniDigits))/np)}`:""}
+                            </div>
+                          </>}
+                        </div>);})()
                         :<div style={{display:"grid",gridTemplateColumns:"minmax(0,1fr) minmax(0,1fr)",gap:10}}>
                           <div><label style={FL}>Início{f.tipo==="acumular"||md.includes("calendario")?" *":""}</label><input type="date" style={INP(erroGen.data_inicio)} value={f.data_inicio} onChange={e=>up("data_inicio",e.target.value)}/><ErrTxt msg={erroGen.data_inicio}/></div>
                           <div><label style={FL}>Prazo *</label><input type="date" style={INP(erroGen.prazo)} min={f.data_inicio||undefined} value={f.prazo} onChange={e=>up("prazo",e.target.value)}/><ErrTxt msg={erroGen.prazo}/></div>
@@ -2246,7 +2465,7 @@ export default function App() {
           <div className="sheet">
             <div className="handle"/>
             <div style={{fontSize:20,fontWeight:800,color:"#1A1A1A",marginBottom:20,fontFamily:"'Inter',sans-serif"}}>{progMode?"Programar Despesa":"Novo Lançamento"}</div>
-            <FormBody form={form} setForm={setForm} erro={erro} setErro={setErro} permiteRecorrencia/>
+            <FormBody form={form} setForm={setForm} erro={erro} setErro={setErro} permiteRecorrencia metasVinc={metas.filter(m=>tipoMeta(m.tipo)==="patrimonio"&&(!m.concluida_em))}/>
             <div style={{height:16}}/>
             <button className="btn-primary" onClick={lancar}>{progMode?"Programar":"Registrar Lançamento"}</button>
             <button className="btn-ghost" onClick={()=>setShowForm(false)}>Cancelar</button>
@@ -2366,7 +2585,7 @@ export default function App() {
             <div className="handle"/>
             <div style={{fontSize:20,fontWeight:800,color:"#1A1A1A",marginBottom:4,fontFamily:"'Inter',sans-serif"}}>Editar Lançamento</div>
             <div style={{fontSize:11,color:"#888888",marginBottom:18,fontFamily:"'Inter',sans-serif"}}>#{editItem.id} · {fmtDate(editItem.data)}</div>
-            <FormBody form={form} setForm={setForm} erro={erro} setErro={setErro}/>
+            <FormBody form={form} setForm={setForm} erro={erro} setErro={setErro} metasVinc={metas.filter(m=>tipoMeta(m.tipo)==="patrimonio"&&(!m.concluida_em))}/>
             <div style={{height:16}}/>
             <button className="btn-primary" onClick={salvarEdicao}>Salvar Alterações</button>
             <button className="btn-danger" onClick={()=>{setDelItem(editItem);setEditItem(null);}}>Excluir Lançamento</button>
@@ -2496,7 +2715,15 @@ export default function App() {
           <button className="btn-ghost" onClick={()=>{setDelGen(null);setMotivoExc("");setMotivoErr(false);}}>Cancelar</button>
         </Modal>
       )}
-      {showAlertas&&<PainelAlertas alertas={alertas} onClose={()=>setShowAlertas(false)}/>}
+      {showAlertas&&<PainelAlertas alertas={alertas} onClose={()=>setShowAlertas(false)}
+        onIgnorar={a=>{ salvaIgn([...ignorados,a.key]); showToast("Alerta retirado"); }}
+        onExecutei={async a=>{
+          const hj=hoje(), alvo=glob.l.filter(l=>a.ids.includes(l.id));
+          const res=await Promise.all(alvo.map(l=>sbPatch(l.id, l.data>hj ? {data:hj,mes:hj.slice(0,7),programado:false} : {programado:false})));
+          salvaIgn([...ignorados,a.key]);   // garante que sai do painel mesmo que o banco ainda não tenha a coluna nova
+          if(res.every(Boolean)){ load(); showToast("✓ Marcado como executado"); } else showToast("⚠ Não salvou no banco");
+        }}
+        nIgnorados={ignorados.length} onRestaurar={()=>salvaIgn([])}/>}
       {toast&&<div className="toast">{toast}</div>}
     </div>
   );
